@@ -197,7 +197,17 @@ export function transformBody(
         if (typeof firstUser.content === "string") {
           firstUser.content = prefix + "\n\n" + firstUser.content
         } else if (Array.isArray(firstUser.content)) {
-          firstUser.content.unshift({ type: "text", text: prefix })
+          const insertAt = firstUser.content.findIndex(
+            (block) => block.type !== "tool_result",
+          )
+          firstUser.content.splice(
+            insertAt === -1 ? firstUser.content.length : insertAt,
+            0,
+            {
+              type: "text",
+              text: prefix,
+            },
+          )
         }
       }
     }
@@ -253,6 +263,19 @@ export function transformBody(
 
     if (Array.isArray(parsed.messages)) {
       parsed.messages = repairToolPairs(parsed.messages)
+
+      const lastMessage = parsed.messages.at(-1)
+      if (lastMessage?.role === "assistant") {
+        parsed.messages.push({
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Please pause and wait for further instructions.",
+            },
+          ],
+        })
+      }
     }
 
     return JSON.stringify(parsed)

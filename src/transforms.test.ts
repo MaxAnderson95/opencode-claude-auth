@@ -286,6 +286,38 @@ describe("transforms", () => {
     assert.equal(parsed.messages[0].content[1].text, "hello")
   })
 
+  it("transformBody preserves leading tool_result blocks when relocating system text", () => {
+    const input = JSON.stringify({
+      system: [{ type: "text", text: "summarize this session" }],
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_1", name: "bash", input: {} },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_1", content: "ok" },
+          ],
+        },
+      ],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      messages: Array<{
+        content: Array<{ type: string; text?: string; tool_use_id?: string }>
+      }>
+    }
+
+    assert.equal(parsed.messages[1].content[0].type, "tool_result")
+    assert.equal(parsed.messages[1].content[0].tool_use_id, "toolu_1")
+    assert.equal(parsed.messages[1].content[1].type, "text")
+    assert.equal(parsed.messages[1].content[1].text, "summarize this session")
+  })
+
   it("transformBody keeps system intact when no messages exist", () => {
     const input = JSON.stringify({
       system: [{ type: "text", text: "Some instructions" }],
@@ -819,6 +851,50 @@ describe("transforms", () => {
       (parsed.messages[0].content as string).includes("hello"),
       "User message content should be preserved",
     )
+  })
+
+  it("transformBody appends a user turn when messages end with assistant", () => {
+    const input = JSON.stringify({
+      model: "claude-opus-4-7",
+      messages: [
+        { role: "user", content: "summarize the session" },
+        { role: "assistant", content: "Here is the summary." },
+      ],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      messages: Array<{ role: string; content: unknown }>
+    }
+
+    assert.equal(parsed.messages.length, 3)
+    assert.equal(parsed.messages[1].role, "assistant")
+    assert.equal(parsed.messages[2].role, "user")
+    assert.deepEqual(parsed.messages[2].content, [
+      {
+        type: "text",
+        text: "Please pause and wait for further instructions.",
+      },
+    ])
+  })
+
+  it("transformBody appends a user turn for any model ending with assistant", () => {
+    const input = JSON.stringify({
+      model: "claude-sonnet-4-5",
+      messages: [
+        { role: "user", content: "summarize the session" },
+        { role: "assistant", content: "Here is the summary." },
+      ],
+    })
+
+    const output = transformBody(input)
+    const parsed = JSON.parse(output as string) as {
+      messages: Array<{ role: string; content: unknown }>
+    }
+
+    assert.equal(parsed.messages.length, 3)
+    assert.equal(parsed.messages[1].role, "assistant")
+    assert.equal(parsed.messages[2].role, "user")
   })
 
   it("transformResponseStream flushes remaining buffered data on stream end", async () => {
