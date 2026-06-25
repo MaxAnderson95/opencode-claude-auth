@@ -37,7 +37,13 @@ export function initLogger(options?: { stream?: Writable }): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
   }
-  writeFileSync(logFilePath, "", "utf-8")
+  // Append-only: do NOT truncate on init, so logs survive across server
+  // restarts and plugin re-inits. Each new process still emits its own
+  // `plugin_init` line, which serves as a natural restart boundary.
+  // Touch the file so it exists even before the first log line.
+  if (!existsSync(logFilePath)) {
+    writeFileSync(logFilePath, "", "utf-8")
+  }
 }
 
 export function log(event: string, data?: Record<string, unknown>): void {
@@ -61,6 +67,10 @@ export function closeLogger(): void {
   mode = "disabled"
   logFilePath = null
   logStream = null
+}
+
+export function isLoggingEnabled(): boolean {
+  return mode !== "disabled"
 }
 
 function redactValue(key: string, value: unknown): unknown {

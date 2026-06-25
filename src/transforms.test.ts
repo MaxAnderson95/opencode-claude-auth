@@ -1,11 +1,15 @@
 import assert from "node:assert/strict"
-import { describe, it } from "node:test"
+import { describe, it, beforeEach, afterEach } from "node:test"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 import {
   repairToolPairs,
   stripToolPrefix,
   transformBody,
   transformResponseStream,
 } from "./transforms.ts"
+import { initLogger, closeLogger } from "./logger.ts"
 
 describe("transforms", () => {
   it("transformBody moves non-core system text to user message and PascalCase-prefixes tool names", () => {
@@ -854,5 +858,123 @@ describe("transforms", () => {
       !text.includes("mcp_beta"),
       `Should not contain mcp_beta in: ${text}`,
     )
+  })
+})
+
+describe("transformResponseStream logging", () => {
+  let tmpDir: string
+  let logPath: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "claude-auth-stream-log-"))
+    logPath = join(tmpDir, "stream.log")
+    process.env.CLAUDE_AUTH_DEBUG = logPath
+    initLogger()
+  })
+
+  afterEach(() => {
+    closeLogger()
+    delete process.env.CLAUDE_AUTH_DEBUG
+    delete process.env.OPENCODE_CLAUDE_AUTH_STREAM_IDLE_LOG_MS
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  function readEvents(): Array<Record<string, unknown>> {
+    let raw = ""
+    try {
+      raw = readFileSync(logPath, "utf-8").trim()
+    } catch {
+      return []
+    }
+    if (!raw) return []
+    return raw.split("\n").map((l) => JSON.parse(l) as Record<string, unknown>)
+  }
+
+  it("logs lifecycle and marks a clean stream (message_stop) as not truncated", async () => {
+    const encoder = new TextEncoder()
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode('event: message_delta\ndata: {"name":"mcp_x"}\n\n'),
+        )
+        controller.enqueue(encoder.encode("event: message_stop\ndata: {}\n\n"))
+        controller.close()
+      },
+    })
+
+    const transformed = transformResponseStream(new Response(source), {
+      modelId: "claude-test",
+    })
+    await transformed.text()
+
+    const events = readEvents()
+    const byEvent = (name: string) => events.find((e) => e.event === name)
+
+    assert.ok(byEvent("stream_start"), "should log stream_start")
+    assert.ok(byEvent("stream_first_chunk"), "should log stream_first_chunk")
+    const end = byEvent("stream_end")
+    assert.ok(end, "should log stream_end")
+    assert.equal(end!.sawMessageStop, true)
+    assert.equal(end!.truncated, false)
+    assert.equal(end!.modelId, "claude-test")
+  })
+
+  it("marks a stream that ends without message_stop as truncated", async () => {
+    const encoder = new TextEncoder()
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode('event: content_block_delta\ndata: {"x":1}\n\n'),
+        )
+        controller.close()
+      },
+    })
+
+    const transformed = transformResponseStream(new Response(source))
+    await transformed.text()
+
+    const end = readEvents().find((e) => e.event === "stream_end")
+    assert.ok(end, "should log stream_end")
+    assert.equal(end!.sawMessageStop, false)
+    assert.equal(end!.truncated, true)
+  })
+
+  it("emits stream_idle while blocked awaiting upstream bytes", async () => {
+    process.env.OPENCODE_CLAUDE_AUTH_STREAM_IDLE_LOG_MS = "20"
+
+    // Source emits a partial event (no \n\n boundary) then never sends more,
+    // simulating an upstream mid-stream stall.
+    const encoder = new TextEncoder()
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: message_delta\ndata: {"par'))
+        // intentionally never close / never enqueue the boundary
+      },
+    })
+
+    const transformed = transformResponseStream(new Response(source), {
+      modelId: "claude-stall",
+    })
+    const reader = transformed.body!.getReader()
+
+    // Kick off a read; it will buffer the partial chunk then block on the
+    // upstream read, arming the idle watchdog.
+    const pending = reader.read()
+    await new Promise((r) => setTimeout(r, 80))
+
+    const idle = readEvents().find((e) => e.event === "stream_idle")
+    assert.ok(idle, "should log stream_idle during an upstream stall")
+    assert.equal(idle!.modelId, "claude-stall")
+    assert.ok(
+      typeof idle!.idleMs === "number" && (idle!.idleMs as number) >= 20,
+      "idleMs should reflect the stall duration",
+    )
+
+    // Clean up: cancelling clears the watchdog interval.
+    await reader.cancel()
+    await pending.catch(() => {})
+
+    const cancel = readEvents().find((e) => e.event === "stream_cancel")
+    assert.ok(cancel, "should log stream_cancel on teardown")
   })
 })

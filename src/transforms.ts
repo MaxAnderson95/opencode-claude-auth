@@ -1,7 +1,31 @@
 import { buildBillingHeaderValue } from "./signing.ts"
 import { config, getModelOverride } from "./model-config.ts"
+import { log, isLoggingEnabled } from "./logger.ts"
 
 const TOOL_PREFIX = "mcp_"
+
+// How long the SSE reader may sit blocked on a single read() before we emit a
+// `stream_idle` diagnostic. This is passive — it only logs, it never aborts the
+// stream. The watchdog only counts time while we are actively awaiting upstream
+// bytes (not while the consumer is applying backpressure), so a `stream_idle`
+// line is strong evidence of an upstream mid-stream stall.
+// Override with OPENCODE_CLAUDE_AUTH_STREAM_IDLE_LOG_MS.
+const DEFAULT_STREAM_IDLE_LOG_MS = 30_000
+
+function getStreamIdleLogMs(): number {
+  const env = process.env.OPENCODE_CLAUDE_AUTH_STREAM_IDLE_LOG_MS
+  if (env) {
+    const parsed = parseInt(env, 10)
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed
+  }
+  return DEFAULT_STREAM_IDLE_LOG_MS
+}
+
+/** Diagnostic context threaded from the fetch handler into stream logging. */
+export interface StreamLogContext {
+  modelId?: string
+  requestStartedAt?: number
+}
 
 /**
  * Prefix a tool name with TOOL_PREFIX and uppercase the first character.
@@ -268,8 +292,34 @@ export function stripToolPrefix(text: string): string {
   )
 }
 
-export function transformResponseStream(response: Response): Response {
+/**
+ * Cheaply scan a complete SSE event for diagnostic markers. Returns the parsed
+ * `event:` type (if any) plus terminal/error flags, without allocating beyond a
+ * small regex match. Used only when logging is enabled.
+ */
+function inspectSseEvent(evt: string): {
+  eventType: string | null
+  isMessageStop: boolean
+  isErrorEvent: boolean
+} {
+  const match = /event:\s*([a-zA-Z_.-]+)/.exec(evt)
+  const eventType = match ? match[1] : null
+  const isMessageStop = evt.includes("message_stop")
+  const isErrorEvent =
+    evt.includes("overloaded_error") ||
+    evt.includes("event: error") ||
+    evt.includes('"type":"error"')
+  return { eventType, isMessageStop, isErrorEvent }
+}
+
+export function transformResponseStream(
+  response: Response,
+  ctx?: StreamLogContext,
+): Response {
+  const modelId = ctx?.modelId ?? "unknown"
+
   if (!response.body) {
+    log("stream_no_body", { modelId, status: response.status })
     return response
   }
 
@@ -277,6 +327,7 @@ export function transformResponseStream(response: Response): Response {
   // with only tool-prefix stripping on the raw body. This preserves error
   // messages for OpenCode / AI SDK to handle properly.
   if (!response.ok) {
+    log("stream_error_response_body", { modelId, status: response.status })
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     const encoder = new TextEncoder()
@@ -290,6 +341,9 @@ export function transformResponseStream(response: Response): Response {
         }
         const text = decoder.decode(value, { stream: true })
         controller.enqueue(encoder.encode(stripToolPrefix(text)))
+      },
+      cancel(reason) {
+        void reader.cancel(reason).catch(() => {})
       },
     })
 
@@ -305,30 +359,163 @@ export function transformResponseStream(response: Response): Response {
   const encoder = new TextEncoder()
   let buffer = ""
 
+  // --- Stream lifecycle instrumentation (logging only; no behavior change) ---
+  const logEnabled = isLoggingEnabled()
+  const streamStartedAt = Date.now()
+  let firstChunkAt = 0
+  let byteCount = 0
+  let eventCount = 0
+  let sawMessageStop = false
+  let sawErrorEvent = false
+  let lastEventType = "none"
+  let closed = false
+  // Only the interval below reads these; they track an in-flight upstream read
+  // so the idle watchdog measures upstream silence, not consumer backpressure.
+  let awaitingRead = false
+  let readStartedAt = 0
+  let idleOccurrences = 0
+  let idleTimer: ReturnType<typeof setInterval> | undefined
+
+  const clearIdle = (): void => {
+    if (idleTimer !== undefined) {
+      clearInterval(idleTimer)
+      idleTimer = undefined
+    }
+  }
+
+  log("stream_start", { modelId, status: response.status })
+
   const stream = new ReadableStream({
+    start() {
+      if (!logEnabled) return
+      const idleMs = getStreamIdleLogMs()
+      idleTimer = setInterval(() => {
+        if (closed || !awaitingRead) return
+        const idleFor = Date.now() - readStartedAt
+        if (idleFor >= idleMs) {
+          idleOccurrences++
+          log("stream_idle", {
+            modelId,
+            idleMs: idleFor,
+            sinceStartMs: Date.now() - streamStartedAt,
+            eventCount,
+            byteCount,
+            lastEventType,
+            sawMessageStop,
+            occurrence: idleOccurrences,
+          })
+        }
+      }, idleMs)
+      // Never keep the process alive solely for this diagnostic timer.
+      idleTimer.unref?.()
+    },
     async pull(controller) {
       for (;;) {
         const boundary = buffer.indexOf("\n\n")
         if (boundary !== -1) {
           const completeEvent = buffer.slice(0, boundary + 2)
           buffer = buffer.slice(boundary + 2)
+          eventCount++
+          if (logEnabled) {
+            const info = inspectSseEvent(completeEvent)
+            if (info.eventType) lastEventType = info.eventType
+            if (info.isMessageStop) sawMessageStop = true
+            if (info.isErrorEvent && !sawErrorEvent) {
+              sawErrorEvent = true
+              log("stream_error_event", {
+                modelId,
+                sinceStartMs: Date.now() - streamStartedAt,
+                eventCount,
+                snippet: completeEvent.slice(0, 200),
+              })
+            }
+          }
           controller.enqueue(encoder.encode(stripToolPrefix(completeEvent)))
           return
         }
 
-        const { done, value } = await reader.read()
+        let result: ReadableStreamReadResult<Uint8Array>
+        readStartedAt = Date.now()
+        awaitingRead = true
+        try {
+          result = await reader.read()
+        } catch (err) {
+          awaitingRead = false
+          closed = true
+          clearIdle()
+          log("stream_error", {
+            modelId,
+            sinceStartMs: Date.now() - streamStartedAt,
+            eventCount,
+            byteCount,
+            error: err instanceof Error ? err.message : String(err),
+          })
+          controller.error(err)
+          return
+        }
+        awaitingRead = false
+
+        const { done, value } = result
 
         if (done) {
           if (buffer) {
+            eventCount++
+            if (logEnabled) {
+              const info = inspectSseEvent(buffer)
+              if (info.eventType) lastEventType = info.eventType
+              if (info.isMessageStop) sawMessageStop = true
+            }
             controller.enqueue(encoder.encode(stripToolPrefix(buffer)))
             buffer = ""
           }
+          closed = true
+          clearIdle()
+          log("stream_end", {
+            modelId,
+            durationMs: Date.now() - streamStartedAt,
+            requestToEndMs: ctx?.requestStartedAt
+              ? Date.now() - ctx.requestStartedAt
+              : undefined,
+            eventCount,
+            byteCount,
+            sawMessageStop,
+            sawErrorEvent,
+            lastEventType,
+            // A clean Anthropic stream ends with message_stop; its absence here
+            // flags a truncated/severed stream even though the socket closed.
+            truncated: !sawMessageStop && !sawErrorEvent,
+          })
           controller.close()
           return
         }
 
+        if (firstChunkAt === 0) {
+          firstChunkAt = Date.now()
+          log("stream_first_chunk", {
+            modelId,
+            ttfbMs: firstChunkAt - streamStartedAt,
+            requestToFirstChunkMs: ctx?.requestStartedAt
+              ? firstChunkAt - ctx.requestStartedAt
+              : undefined,
+          })
+        }
+        byteCount += value.byteLength
         buffer += decoder.decode(value, { stream: true })
       }
+    },
+    cancel(reason) {
+      closed = true
+      clearIdle()
+      log("stream_cancel", {
+        modelId,
+        sinceStartMs: Date.now() - streamStartedAt,
+        eventCount,
+        byteCount,
+        sawMessageStop,
+        lastEventType,
+        reason: reason instanceof Error ? reason.message : String(reason ?? ""),
+      })
+      void reader.cancel(reason).catch(() => {})
     },
   })
 

@@ -213,6 +213,7 @@ export function refreshViaOAuth(
     });
   `
 
+  const startedAt = Date.now()
   try {
     log("refresh_started", { source: "oauth" })
     const result = execFileSync(process.execPath, ["-e", script], {
@@ -227,16 +228,22 @@ export function refreshViaOAuth(
       log("refresh_failed", {
         source: "oauth",
         error: "no access_token in response",
+        // Synchronous execFileSync blocks the event loop for this long.
+        durationMs: Date.now() - startedAt,
       })
       return null
     }
 
-    log("refresh_success", { source: "oauth" })
+    log("refresh_success", {
+      source: "oauth",
+      durationMs: Date.now() - startedAt,
+    })
     return creds
   } catch (err) {
     log("refresh_failed", {
       source: "oauth",
       error: err instanceof Error ? err.message : String(err),
+      durationMs: Date.now() - startedAt,
     })
     return null
   }
@@ -246,6 +253,7 @@ function refreshViaCli(): void {
   const maxAttempts = 2
   for (let i = 0; i < maxAttempts; i++) {
     log("refresh_started", { source: "cli", attempt: i + 1 })
+    const startedAt = Date.now()
     try {
       execSync("claude -p . --model haiku", {
         timeout: 60_000,
@@ -254,13 +262,18 @@ function refreshViaCli(): void {
         stdio: "ignore",
         cwd: tmpdir(),
       })
-      log("refresh_success", { source: "cli" })
+      log("refresh_success", {
+        source: "cli",
+        // Synchronous execSync blocks the entire event loop for this long.
+        durationMs: Date.now() - startedAt,
+      })
       return
     } catch (err) {
       log("refresh_failed", {
         source: "cli",
         attempt: i + 1,
         error: err instanceof Error ? err.message : String(err),
+        durationMs: Date.now() - startedAt,
       })
       // Non-fatal: retry once, then give up
     }

@@ -322,6 +322,7 @@ const plugin: Plugin = async () => {
           apiKey: "",
           baseURL: "https://api.anthropic.com/v1",
           async fetch(input: RequestInfo | URL, init?: RequestInit) {
+            const requestStartedAt = Date.now()
             const latest = getCachedCredentials()
             if (!latest) {
               log("fetch_no_credentials", { modelId: "unknown" })
@@ -476,7 +477,10 @@ const plugin: Plugin = async () => {
                 .catch(() => {})
             }
 
-            return transformResponseStream(response)
+            return transformResponseStream(response, {
+              modelId,
+              requestStartedAt,
+            })
           },
         }
       },

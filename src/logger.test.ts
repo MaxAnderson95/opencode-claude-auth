@@ -67,7 +67,7 @@ describe("logger", () => {
       assert.equal(JSON.parse(lines[1]).event, "event_two")
     })
 
-    it("truncates the file on initLogger()", () => {
+    it("appends across initLogger() calls without truncating", () => {
       const logPath = join(tmpDir, "test.log")
       process.env.CLAUDE_AUTH_DEBUG = logPath
 
@@ -76,13 +76,14 @@ describe("logger", () => {
       log("old_event", {})
       closeLogger()
 
-      // Second session — should truncate
+      // Second session — must preserve prior lines (append-only, survives restarts)
       initLogger()
       log("new_event", {})
 
       const lines = readFileSync(logPath, "utf-8").trim().split("\n")
-      assert.equal(lines.length, 1)
-      assert.equal(JSON.parse(lines[0]).event, "new_event")
+      assert.equal(lines.length, 2)
+      assert.equal(JSON.parse(lines[0]).event, "old_event")
+      assert.equal(JSON.parse(lines[1]).event, "new_event")
     })
 
     it("creates parent directories if they don't exist", () => {
