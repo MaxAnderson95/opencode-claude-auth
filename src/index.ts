@@ -63,7 +63,7 @@ function getCliVersion(): string {
 function getUserAgent(): string {
   return (
     process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${getCliVersion()} (external, sdk-cli)`
+    `claude-cli/${getCliVersion()} (external, cli)`
   )
 }
 
