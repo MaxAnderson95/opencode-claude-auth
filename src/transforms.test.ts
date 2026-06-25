@@ -977,4 +977,75 @@ describe("transformResponseStream logging", () => {
     const cancel = readEvents().find((e) => e.event === "stream_cancel")
     assert.ok(cancel, "should log stream_cancel on teardown")
   })
+
+  it("aborts a stalled stream after the idle-abort threshold (PR #139)", async () => {
+    process.env.OPENCODE_CLAUDE_AUTH_STREAM_IDLE_LOG_MS = "15"
+    process.env.OPENCODE_CLAUDE_AUTH_STREAM_IDLE_ABORT_MS = "45"
+
+    const encoder = new TextEncoder()
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: message_delta\ndata: {"par'))
+        // Never sends the boundary or closes — a hung upstream stream.
+      },
+    })
+
+    const transformed = transformResponseStream(new Response(source), {
+      modelId: "claude-abort",
+    })
+    const reader = transformed.body!.getReader()
+
+    // The read blocks awaiting upstream bytes; the watchdog must abort it.
+    await assert.rejects(
+      reader.read(),
+      /idle/i,
+      "read should reject once the idle-abort fires",
+    )
+
+    const abort = readEvents().find((e) => e.event === "stream_idle_abort")
+    assert.ok(abort, "should log stream_idle_abort")
+    assert.equal(abort!.modelId, "claude-abort")
+    assert.ok(
+      typeof abort!.idleMs === "number" && (abort!.idleMs as number) >= 45,
+      "idleMs should be at least the abort threshold",
+    )
+  })
+
+  it("does not abort when OPENCODE_CLAUDE_AUTH_STREAM_IDLE_ABORT_MS=0", async () => {
+    process.env.OPENCODE_CLAUDE_AUTH_STREAM_IDLE_LOG_MS = "15"
+    process.env.OPENCODE_CLAUDE_AUTH_STREAM_IDLE_ABORT_MS = "0"
+
+    const encoder = new TextEncoder()
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: message_delta\ndata: {"par'))
+      },
+    })
+
+    const transformed = transformResponseStream(new Response(source), {
+      modelId: "claude-noabort",
+    })
+    const reader = transformed.body!.getReader()
+
+    // With abort disabled, the read stays pending (logs only); prove it does
+    // not reject within a window that comfortably exceeds the log threshold.
+    const read = reader.read()
+    const outcome = await Promise.race([
+      read.then(() => "resolved").catch(() => "rejected"),
+      new Promise((r) => setTimeout(() => r("pending"), 80)),
+    ])
+    assert.equal(outcome, "pending", "stream must not abort when disabled")
+
+    assert.ok(
+      readEvents().some((e) => e.event === "stream_idle"),
+      "should still log stream_idle while disabled-abort",
+    )
+    assert.ok(
+      !readEvents().some((e) => e.event === "stream_idle_abort"),
+      "must not log stream_idle_abort when disabled",
+    )
+
+    await reader.cancel()
+    await read.catch(() => {})
+  })
 })

@@ -21,6 +21,23 @@ function getStreamIdleLogMs(): number {
   return DEFAULT_STREAM_IDLE_LOG_MS
 }
 
+// How long the SSE reader may sit blocked on a single read() before we ABORT
+// the stalled stream so OpenCode can retry it, instead of hanging indefinitely.
+// Reimplements the idle-abort behavior from upstream PR #139. Unlike the idle
+// LOG threshold above, this changes behavior: it cancels the upstream read and
+// errors the stream. Set to 0 to disable (logging-only). Override with
+// OPENCODE_CLAUDE_AUTH_STREAM_IDLE_ABORT_MS.
+const DEFAULT_STREAM_IDLE_ABORT_MS = 60_000
+
+function getStreamIdleAbortMs(): number {
+  const env = process.env.OPENCODE_CLAUDE_AUTH_STREAM_IDLE_ABORT_MS
+  if (env !== undefined) {
+    const parsed = parseInt(env, 10)
+    if (!Number.isNaN(parsed) && parsed >= 0) return parsed
+  }
+  return DEFAULT_STREAM_IDLE_ABORT_MS
+}
+
 /** Diagnostic context threaded from the fetch handler into stream logging. */
 export interface StreamLogContext {
   modelId?: string
@@ -386,13 +403,44 @@ export function transformResponseStream(
   log("stream_start", { modelId, status: response.status })
 
   const stream = new ReadableStream({
-    start() {
-      if (!logEnabled) return
-      const idleMs = getStreamIdleLogMs()
+    start(controller) {
+      const idleLogMs = getStreamIdleLogMs()
+      const abortMs = getStreamIdleAbortMs()
+      // Nothing to do if both logging and abort are off.
+      if (!logEnabled && abortMs <= 0) return
+      // Tick at the finer of the two thresholds so the abort fires promptly.
+      const tickMs = abortMs > 0 ? Math.min(idleLogMs, abortMs) : idleLogMs
       idleTimer = setInterval(() => {
         if (closed || !awaitingRead) return
         const idleFor = Date.now() - readStartedAt
-        if (idleFor >= idleMs) {
+
+        // Active recovery: abort a stalled upstream read so OpenCode can retry,
+        // instead of hanging indefinitely. Reimplements upstream PR #139.
+        if (abortMs > 0 && idleFor >= abortMs) {
+          closed = true
+          clearIdle()
+          log("stream_idle_abort", {
+            modelId,
+            idleMs: idleFor,
+            sinceStartMs: Date.now() - streamStartedAt,
+            eventCount,
+            byteCount,
+            lastEventType,
+          })
+          void reader.cancel().catch(() => {})
+          try {
+            controller.error(
+              new Error(
+                `Anthropic stream idle for ${idleFor}ms with no data; aborting so the request can be retried`,
+              ),
+            )
+          } catch {
+            // Controller may already be closed/errored; ignore.
+          }
+          return
+        }
+
+        if (logEnabled && idleFor >= idleLogMs) {
           idleOccurrences++
           log("stream_idle", {
             modelId,
@@ -405,7 +453,7 @@ export function transformResponseStream(
             occurrence: idleOccurrences,
           })
         }
-      }, idleMs)
+      }, tickMs)
       // Never keep the process alive solely for this diagnostic timer.
       idleTimer.unref?.()
     },
@@ -454,6 +502,9 @@ export function transformResponseStream(
           return
         }
         awaitingRead = false
+        // The idle watchdog may have aborted (and errored the controller)
+        // while we were blocked; cancelling resolves this read as done.
+        if (closed) return
 
         const { done, value } = result
 
