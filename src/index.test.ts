@@ -84,7 +84,7 @@ function syncToPath(
     type: "oauth",
     access: creds.accessToken,
     refresh: creds.refreshToken,
-    expires: creds.expiresAt,
+    expires: Math.floor(creds.expiresAt),
   }
   const dir = fs.dirname(authPath)
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -112,7 +112,7 @@ function buildAuthorizeResult(account: Account) {
         provider: "anthropic",
         access: creds.accessToken,
         refresh: creds.refreshToken,
-        expires: creds.expiresAt,
+        expires: Math.floor(creds.expiresAt),
       }
     },
   }
@@ -953,6 +953,18 @@ describe("auth hook — authorize callback", () => {
       (await buildAuthorizeResult(account).callback()).expires,
       1700000000000,
     )
+  })
+
+  it("callback returns an integer expiry timestamp", async () => {
+    const account = {
+      label: "Account 1",
+      source: "Claude Code-credentials",
+      credentials: makeCreds({ expiresAt: 1700000000000.186 }),
+    }
+    const expires = (await buildAuthorizeResult(account).callback()).expires
+
+    assert.equal(expires, 1700000000000)
+    assert.equal(Number.isInteger(expires), true)
   })
 })
 

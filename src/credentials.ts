@@ -122,7 +122,7 @@ function syncToPath(authPath: string, creds: ClaudeCredentials): void {
     type: "oauth",
     access: creds.accessToken,
     refresh: creds.refreshToken,
-    expires: creds.expiresAt,
+    expires: Math.floor(creds.expiresAt),
   }
   const dir = dirname(authPath)
   if (!existsSync(dir)) {

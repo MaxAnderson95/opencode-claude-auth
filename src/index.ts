@@ -543,7 +543,7 @@ const plugin: Plugin = async () => {
                   provider: "anthropic",
                   access: creds.accessToken,
                   refresh: creds.refreshToken,
-                  expires: creds.expiresAt,
+                  expires: Math.floor(creds.expiresAt),
                 }
               },
             }

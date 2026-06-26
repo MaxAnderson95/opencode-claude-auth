@@ -1,6 +1,10 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { refreshViaOAuth, parseOAuthResponse } from "./credentials.ts"
+import {
+  refreshViaOAuth,
+  parseOAuthResponse,
+  syncAuthJson,
+} from "./credentials.ts"
 import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -437,6 +441,40 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         0o600,
         `Expected file mode 0o600, got 0o${mode.toString(8)}`,
       )
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+    }
+  })
+
+  it("writes integer expires timestamps accepted by OpenCode auth schema", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(
+      join(tmpdir(), "opencode-claude-auth-integer-expires-"),
+    )
+    process.env.HOME = tempHome
+
+    try {
+      syncAuthJson({
+        accessToken: "tok",
+        refreshToken: "ref",
+        expiresAt: 1_782_450_816_643.186,
+      })
+
+      const authPath = join(
+        tempHome,
+        ".local",
+        "share",
+        "opencode",
+        "auth.json",
+      )
+      const auth = JSON.parse(await readFile(authPath, "utf8"))
+
+      assert.equal(auth.anthropic.expires, 1_782_450_816_643)
+      assert.equal(Number.isInteger(auth.anthropic.expires), true)
     } finally {
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
