@@ -16,6 +16,7 @@ import { applyOpencodeConfig } from "./plugin-config.ts"
 import {
   getCachedCredentials,
   getCredentialsForSync,
+  clearCredentialCache,
   syncAuthJson,
   initAccounts,
   setActiveAccountSource,
@@ -385,6 +386,10 @@ const plugin: Plugin = async () => {
             // This handles the common case of token expiry mid-session.
             if (response.status === 401) {
               log("fetch_401_retry", { modelId })
+              // Bust the 30s cache so this re-read hits the store and picks up
+              // any token rotated externally (e.g. by an interactive Claude
+              // Code run) since we cached the now-rejected token.
+              clearCredentialCache()
               const refreshed = getCachedCredentials()
               if (refreshed && refreshed.accessToken !== latest.accessToken) {
                 const retryHeaders = buildRequestHeaders(

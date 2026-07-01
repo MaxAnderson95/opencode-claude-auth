@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from "node:child_process"
+import { execFileSync, execSync, type StdioOptions } from "node:child_process"
 import {
   chmodSync,
   existsSync,
@@ -22,6 +22,13 @@ export type { ClaudeCredentials } from "./keychain.ts"
 export type { ClaudeAccount } from "./keychain.ts"
 
 const CREDENTIAL_CACHE_TTL_MS = 30_000
+
+/** Truncate a string for safe logging, appending the original length. */
+function truncate(value: string, max: number): string {
+  return value.length > max
+    ? `${value.slice(0, max)}... [${value.length} chars]`
+    : value
+}
 
 const accountCacheMap = new Map<
   string,
@@ -207,9 +214,9 @@ export function refreshViaOAuth(
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString()
       })
-      .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
-      .then(d => { process.stdout.write(JSON.stringify(d)); })
-      .catch(e => { process.stdout.write(JSON.stringify({ error: String(e) })); process.exit(1); });
+      .then(r => r.text().then(t => ({ status: r.status, ok: r.ok, body: t })))
+      .then(o => { process.stdout.write(JSON.stringify(o)); })
+      .catch(e => { process.stdout.write(JSON.stringify({ status: 0, ok: false, body: String(e) })); });
     });
   `
 
@@ -223,12 +230,36 @@ export function refreshViaOAuth(
       stdio: ["pipe", "pipe", "ignore"],
     })
 
-    const creds = parseOAuthResponse(result, refreshToken)
+    let envelope: { status?: number; ok?: boolean; body?: string }
+    try {
+      envelope = JSON.parse(result) as {
+        status?: number
+        ok?: boolean
+        body?: string
+      }
+    } catch {
+      envelope = {}
+    }
+
+    if (!envelope.ok) {
+      log("refresh_failed", {
+        source: "oauth",
+        status: envelope.status ?? "unknown",
+        // Non-2xx bodies carry an OAuth error (e.g. invalid_grant / expired
+        // refresh token), never the access/refresh tokens — safe to log.
+        error: truncate(envelope.body ?? "no response body", 500),
+        // Synchronous execFileSync blocks the event loop for this long.
+        durationMs: Date.now() - startedAt,
+      })
+      return null
+    }
+
+    const creds = parseOAuthResponse(envelope.body ?? "", refreshToken)
     if (!creds) {
       log("refresh_failed", {
         source: "oauth",
+        status: envelope.status ?? "unknown",
         error: "no access_token in response",
-        // Synchronous execFileSync blocks the event loop for this long.
         durationMs: Date.now() - startedAt,
       })
       return null
@@ -236,43 +267,113 @@ export function refreshViaOAuth(
 
     log("refresh_success", {
       source: "oauth",
+      status: envelope.status,
       durationMs: Date.now() - startedAt,
     })
     return creds
   } catch (err) {
+    // Network error, timeout, or subprocess spawn failure.
+    const e = err as { killed?: boolean }
     log("refresh_failed", {
       source: "oauth",
       error: err instanceof Error ? err.message : String(err),
+      killed: e.killed,
       durationMs: Date.now() - startedAt,
     })
     return null
   }
 }
 
+/**
+ * Resolve the `claude` CLI to an absolute path so the refresh fallback works
+ * even under a minimal PATH (e.g. launchd-managed servers). Honors the
+ * CLAUDE_CLI_PATH override, then checks known install locations, then falls
+ * back to a shell PATH lookup, and finally to the bare command name.
+ */
+function resolveClaudeBinary(): string {
+  const override = process.env.CLAUDE_CLI_PATH
+  if (override) return override
+
+  if (process.platform !== "win32") {
+    const candidates = [
+      join(homedir(), ".local", "bin", "claude"),
+      "/opt/homebrew/bin/claude",
+      "/usr/local/bin/claude",
+      "/usr/bin/claude",
+    ]
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return candidate
+    }
+    try {
+      const found = execFileSync("/bin/sh", ["-c", "command -v claude"], {
+        timeout: 2000,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim()
+      if (found && existsSync(found)) return found
+    } catch {
+      // fall through to bare command name
+    }
+  }
+
+  // Bare name; resolved via PATH (execFile on POSIX, shell on Windows).
+  return "claude"
+}
+
+function runClaudeRefresh(claudeBin: string): void {
+  const env = { ...process.env, TERM: "dumb" }
+  // Capture stderr so refresh failures are diagnosable; ignore stdin/stdout.
+  const stdio: StdioOptions = ["ignore", "ignore", "pipe"]
+  if (process.platform === "win32") {
+    // Use a shell so Windows resolves claude.cmd/.exe via PATHEXT.
+    execSync(`${claudeBin} -p . --model haiku`, {
+      timeout: 60_000,
+      encoding: "utf-8",
+      env,
+      stdio,
+      cwd: tmpdir(),
+    })
+  } else {
+    execFileSync(claudeBin, ["-p", ".", "--model", "haiku"], {
+      timeout: 60_000,
+      encoding: "utf-8",
+      env,
+      stdio,
+      cwd: tmpdir(),
+    })
+  }
+}
+
 function refreshViaCli(): void {
+  const claudeBin = resolveClaudeBinary()
   const maxAttempts = 2
   for (let i = 0; i < maxAttempts; i++) {
-    log("refresh_started", { source: "cli", attempt: i + 1 })
+    log("refresh_started", { source: "cli", attempt: i + 1, bin: claudeBin })
     const startedAt = Date.now()
     try {
-      execSync("claude -p . --model haiku", {
-        timeout: 60_000,
-        encoding: "utf-8",
-        env: { ...process.env, TERM: "dumb" },
-        stdio: "ignore",
-        cwd: tmpdir(),
-      })
+      runClaudeRefresh(claudeBin)
       log("refresh_success", {
         source: "cli",
-        // Synchronous execSync blocks the entire event loop for this long.
+        // Synchronous exec blocks the entire event loop for this long.
         durationMs: Date.now() - startedAt,
       })
       return
     } catch (err) {
+      const e = err as {
+        stderr?: unknown
+        code?: string
+        status?: number
+        killed?: boolean
+      }
       log("refresh_failed", {
         source: "cli",
         attempt: i + 1,
+        bin: claudeBin,
+        code: e.code,
+        status: e.status,
+        killed: e.killed,
         error: err instanceof Error ? err.message : String(err),
+        stderr: e.stderr ? truncate(String(e.stderr), 500) : undefined,
         durationMs: Date.now() - startedAt,
       })
       // Non-fatal: retry once, then give up
@@ -286,14 +387,35 @@ export function refreshIfNeeded(
   const target = account ?? getActiveAccount()
   if (!target) return null
 
-  // Pick up external updates to .credentials.json (e.g. switch_claude_account
-  // on Windows). Bounded by getCachedCredentials's 30s TTL: fires at most
-  // ~2x/min under load. macOS keychain sources stay on the in-memory path;
-  // their state is mutated only by our own writeBackCredentials, so no
-  // external-update vector exists for them.
-  if (target.source === "file") {
-    const onDisk = refreshAccount(target.source)
-    if (onDisk) target.credentials = onDisk
+  // Pick up external updates to the credential store before deciding whether a
+  // refresh is needed. Claude Code rewrites the macOS keychain on its own
+  // refreshes (rotating the refresh token out from under us), and
+  // switch_claude_account replaces .credentials.json on Windows. Without
+  // re-reading, we'd operate on a stale in-memory copy and attempt to refresh
+  // with an already-invalidated refresh token — the failure mode that forces a
+  // manual `claude` run. Bounded by getCachedCredentials's 30s TTL: fires at
+  // most ~2x/min under load.
+  try {
+    const reloaded = refreshAccount(target.source)
+    if (reloaded) {
+      const changed = reloaded.accessToken !== target.credentials.accessToken
+      const previousExpiry = target.credentials.expiresAt
+      target.credentials = reloaded
+      if (changed) {
+        log("credentials_reloaded", {
+          source: target.source,
+          previousExpiry,
+          newExpiry: reloaded.expiresAt,
+        })
+      }
+    }
+  } catch (err) {
+    // Transient store read failure (keychain locked/denied/timeout) — fall back
+    // to the in-memory copy rather than aborting the refresh path.
+    log("credentials_reload_failed", {
+      source: target.source,
+      error: err instanceof Error ? err.message : String(err),
+    })
   }
 
   const creds = target.credentials
@@ -349,6 +471,20 @@ export function getCredentialsForSync(): ClaudeCredentials | null {
 
   // Credentials are near expiry -- don't refresh here, let the per-request path handle it
   return null
+}
+
+/**
+ * Drop cached credentials so the next getCachedCredentials() call re-reads the
+ * store (keychain/file) and re-evaluates refresh. Used after a 401 to recover
+ * from a token that was rotated externally (e.g. by an interactive Claude Code
+ * run) while we held a stale in-memory copy.
+ */
+export function clearCredentialCache(source?: string): void {
+  if (source) {
+    accountCacheMap.delete(source)
+  } else {
+    accountCacheMap.clear()
+  }
 }
 
 export function getCachedCredentials(): ClaudeCredentials | null {

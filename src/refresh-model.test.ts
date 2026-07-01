@@ -9,7 +9,7 @@ describe("refreshViaCli model selection", () => {
       "utf-8",
     )
 
-    assert.match(source, /claude -p \. --model haiku/)
+    assert.match(source, /"--model",\s*"haiku"/)
     assert.doesNotMatch(source, /claude-haiku-4-5-20250514/)
   })
 })

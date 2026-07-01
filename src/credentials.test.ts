@@ -150,11 +150,15 @@ describe("credential caching", () => {
       ])
 
       const first = credentialsModule.getCachedCredentials()
+      const readsAfterFirst = keychainModule.__getReadCount()
       const second = credentialsModule.getCachedCredentials()
+      const readsAfterSecond = keychainModule.__getReadCount()
 
       assert.ok(first)
       assert.ok(second)
-      assert.equal(keychainModule.__getReadCount(), 0)
+      // The second call within the 30s TTL must be a cache hit: no additional
+      // store read beyond whatever the first (cache-miss) call performed.
+      assert.equal(readsAfterSecond, readsAfterFirst)
     } finally {
       Date.now = originalNow
     }
