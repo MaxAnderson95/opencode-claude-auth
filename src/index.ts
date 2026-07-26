@@ -18,14 +18,15 @@ import {
 } from "./transforms.ts"
 import {
   getCachedCredentials,
-  getCredentialsForSync,
   reloadCredentialsFromSource,
+  getActiveAccount,
   syncAuthJson,
   initAccounts,
   setActiveAccountSource,
   loadPersistedAccountSource,
   saveAccountSource,
   refreshAccountsList,
+  refreshIfNeeded,
   type ClaudeCredentials,
 } from "./credentials.ts"
 
@@ -217,6 +218,7 @@ export function buildRequestHeaders(
 }
 
 const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
+const PROACTIVE_REFRESH_THRESHOLD_MS = 60 * 60 * 1000 // 1 hour before expiry
 
 const plugin: Plugin = async () => {
   initLogger()
@@ -261,11 +263,43 @@ const plugin: Plugin = async () => {
       )
     }
 
-    // Keep auth.json synced with current credentials (no refresh triggered)
+    // Keep auth.json synced and proactively refresh before expiry.
+    // refreshIfNeeded() always resolves the currently ACTIVE account
+    // (via getActiveAccount() internally) — not a closure-captured account
+    // list — so this stays correct across account switches. Passing
+    // PROACTIVE_REFRESH_THRESHOLD_MS (1 hour) means it triggers a real
+    // OAuth refresh once the token is within that window of expiry, and
+    // simply returns the untouched credentials otherwise (no-op refresh).
+    // This prevents the "run `claude` to re-authenticate" message from
+    // appearing mid-session when the token silently expires.
+    let proactiveRefreshWarned = false
     const syncTimer = setInterval(() => {
       try {
-        const creds = getCredentialsForSync()
-        if (creds) syncAuthJson(creds)
+        const account = getActiveAccount()
+        log("proactive_refresh_check", {
+          source: account?.source ?? null,
+          expiresAt: account?.credentials?.expiresAt ?? null,
+          thresholdMs: PROACTIVE_REFRESH_THRESHOLD_MS,
+        })
+
+        const creds = refreshIfNeeded(undefined, PROACTIVE_REFRESH_THRESHOLD_MS)
+        if (creds) {
+          syncAuthJson(creds)
+          if (proactiveRefreshWarned) {
+            log("proactive_refresh_recovered", { source: account?.source })
+          }
+          proactiveRefreshWarned = false
+        } else {
+          log("proactive_refresh_failed", { source: account?.source })
+          // Only warn once per outage — otherwise this fires every
+          // SYNC_INTERVAL (5 min) for as long as refresh keeps failing.
+          if (!proactiveRefreshWarned) {
+            proactiveRefreshWarned = true
+            console.warn(
+              "opencode-claude-auth: Proactive token refresh failed. Run `claude` to re-authenticate.",
+            )
+          }
+        }
       } catch {
         // Non-fatal
       }
