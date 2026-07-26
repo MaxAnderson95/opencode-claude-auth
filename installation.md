@@ -28,7 +28,7 @@ If this returns credentials, you're authenticated. If it fails or returns nothin
 cat ~/.claude/.credentials.json
 ```
 
-If this file exists and contains valid JSON, you're authenticated.
+If this file exists and contains valid JSON, you're authenticated. If `CLAUDE_CONFIG_DIR` is set, check `$CLAUDE_CONFIG_DIR/.credentials.json` instead.
 
 ### If credentials don't exist
 
@@ -38,7 +38,7 @@ Run Claude Code to authenticate:
 claude
 ```
 
-This will prompt you to log in and store credentials in Keychain (macOS) or `~/.claude/.credentials.json` (other platforms).
+This will prompt you to log in and store credentials in Keychain (macOS) or `~/.claude/.credentials.json` (other platforms; `$CLAUDE_CONFIG_DIR/.credentials.json` if `CLAUDE_CONFIG_DIR` is set).
 
 ## Installation
 
