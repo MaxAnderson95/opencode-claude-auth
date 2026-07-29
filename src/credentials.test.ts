@@ -2,9 +2,11 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import {
   refreshViaOAuth,
+  resolveJsRuntime,
   parseOAuthResponse,
   syncAuthJson,
 } from "./credentials.ts"
+import { execFileSync } from "node:child_process"
 import {
   chmodSync,
   mkdirSync,
@@ -14,7 +16,7 @@ import {
 } from "node:fs"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { pathToFileURL } from "node:url"
 
 type Creds = {
@@ -1083,6 +1085,94 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 describe("refreshViaOAuth", () => {
   it("is exported as a function", () => {
     assert.equal(typeof refreshViaOAuth, "function")
+  })
+})
+
+function withEnv(
+  overrides: Record<string, string | undefined>,
+  fn: () => void,
+): void {
+  const original = new Map<string, string | undefined>()
+  for (const key of Object.keys(overrides)) {
+    original.set(key, process.env[key])
+    const value = overrides[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  try {
+    fn()
+  } finally {
+    for (const [key, value] of original) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
+describe("resolveJsRuntime", () => {
+  it("honors the CLAUDE_AUTH_JS_RUNTIME override", () => {
+    withEnv({ CLAUDE_AUTH_JS_RUNTIME: "/custom/bun" }, () => {
+      assert.equal(resolveJsRuntime(), "/custom/bun")
+    })
+  })
+
+  it("returns the host runtime when the test process is node itself", () => {
+    withEnv({ CLAUDE_AUTH_JS_RUNTIME: undefined }, () => {
+      assert.equal(resolveJsRuntime(), process.execPath)
+    })
+  })
+
+  it("resolves a runtime that can actually evaluate -e", () => {
+    withEnv({ CLAUDE_AUTH_JS_RUNTIME: undefined }, () => {
+      const runtime = resolveJsRuntime()
+      assert.ok(runtime, "expected a runtime to be resolved")
+      const out = execFileSync(runtime, ["-e", "process.stdout.write('ok')"], {
+        timeout: 15_000,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+      assert.equal(out, "ok")
+    })
+  })
+
+  it("never hands back a host binary that is not a JS runtime", () => {
+    // Regression guard: OpenCode is a Bun single-file executable, so
+    // process.execPath is the `opencode` binary, and `opencode -e <script>`
+    // exits 1 with CLI help instead of evaluating anything. Any non-runtime
+    // execPath must be rejected in favor of a real node/bun on disk.
+    const original = Object.getOwnPropertyDescriptor(process, "execPath")
+    assert.ok(original)
+    Object.defineProperty(process, "execPath", {
+      ...original,
+      value: "/Users/someone/.opencode/bin/opencode",
+    })
+    try {
+      withEnv({ CLAUDE_AUTH_JS_RUNTIME: undefined }, () => {
+        const runtime = resolveJsRuntime()
+        assert.ok(runtime, "expected a fallback runtime to be resolved")
+        assert.notEqual(basename(runtime), "opencode")
+        assert.ok(
+          ["node", "nodejs", "bun", "node.exe", "bun.exe"].includes(
+            basename(runtime),
+          ),
+          `expected a JS runtime basename, got ${runtime}`,
+        )
+      })
+    } finally {
+      Object.defineProperty(process, "execPath", original)
+    }
+  })
+})
+
+describe("refreshViaOAuth subprocess shape", () => {
+  it("spawns the resolved runtime, never process.execPath directly", () => {
+    const source = readFileSync(
+      new URL("./credentials.ts", import.meta.url),
+      "utf-8",
+    )
+
+    assert.match(source, /execFileSync\(runtime, \["-e", script\]/)
+    assert.doesNotMatch(source, /execFileSync\(process\.execPath/)
   })
 })
 

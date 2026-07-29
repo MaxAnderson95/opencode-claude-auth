@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import {
   PRIMARY_SERVICE,
   readAllClaudeAccounts,
@@ -194,6 +194,70 @@ export function parseOAuthResponse(
   }
 }
 
+const JS_RUNTIME_BASENAMES = new Set([
+  "node",
+  "nodejs",
+  "bun",
+  "node.exe",
+  "bun.exe",
+])
+
+/**
+ * Resolve a JS runtime capable of evaluating `-e <script>` for the synchronous
+ * OAuth refresh subprocess.
+ *
+ * `process.execPath` only names such a runtime when the host process *is* node
+ * or bun. OpenCode ships as a Bun single-file executable, where
+ * `process.execPath` is the opencode binary itself: `opencode -e '<script>'`
+ * exits 1 with the CLI help on stderr and never evaluates the script. That made
+ * every direct OAuth refresh throw and fall through to the blocking `claude -p`
+ * fallback, which cannot rotate a token until Claude Code's own (much tighter)
+ * expiry threshold is reached. So verify the host runtime by name first, and
+ * only then go looking for a standalone one.
+ */
+export function resolveJsRuntime(): string | null {
+  const override = process.env.CLAUDE_AUTH_JS_RUNTIME
+  if (override) return override
+
+  if (JS_RUNTIME_BASENAMES.has(basename(process.execPath).toLowerCase())) {
+    return process.execPath
+  }
+
+  if (process.platform === "win32") {
+    // Resolved via PATH/PATHEXT by the shell path in execSync callers.
+    return "node"
+  }
+
+  const bunInstall = process.env.BUN_INSTALL
+  const candidates = [
+    ...(bunInstall ? [join(bunInstall, "bin", "bun")] : []),
+    join(homedir(), ".bun", "bin", "bun"),
+    "/opt/homebrew/bin/node",
+    "/opt/homebrew/bin/bun",
+    "/usr/local/bin/node",
+    "/usr/local/bin/bun",
+    "/usr/bin/node",
+  ]
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+
+  for (const name of ["node", "bun"]) {
+    try {
+      const found = execFileSync("/bin/sh", ["-c", `command -v ${name}`], {
+        timeout: 2000,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim()
+      if (found && existsSync(found)) return found
+    } catch {
+      // Try the next runtime name.
+    }
+  }
+
+  return null
+}
+
 export function refreshViaOAuth(
   refreshToken: string,
 ): ClaudeCredentials | null {
@@ -219,9 +283,19 @@ export function refreshViaOAuth(
   `
 
   const startedAt = Date.now()
+  const runtime = resolveJsRuntime()
+  if (!runtime) {
+    log("refresh_failed", {
+      source: "oauth",
+      error: "no JS runtime available to evaluate the refresh script",
+      execPath: process.execPath,
+    })
+    return null
+  }
+
   try {
-    log("refresh_started", { source: "oauth" })
-    const result = execFileSync(process.execPath, ["-e", script], {
+    log("refresh_started", { source: "oauth", runtime })
+    const result = execFileSync(runtime, ["-e", script], {
       input: refreshToken,
       timeout: 15_000,
       encoding: "utf-8",
