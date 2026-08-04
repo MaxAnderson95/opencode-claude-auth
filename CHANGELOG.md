@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.1.6](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.5...v2.1.6) (2026-08-03)
+
+
+### Bug Fixes
+
+* make OAuth refresh resilient to transient rate-limits (+ diagnostics) ([#264](https://github.com/griffinmartin/opencode-claude-auth/issues/264)) ([5532c37](https://github.com/griffinmartin/opencode-claude-auth/commit/5532c37dec127f0a6cac2308901e030d75331f1a))
+* preserve thinking blocks when repairing tool pairs after compaction ([#263](https://github.com/griffinmartin/opencode-claude-auth/issues/263)) ([8de49c8](https://github.com/griffinmartin/opencode-claude-auth/commit/8de49c81a0effeb0217b2d98aa7d7b4a1f389ed3))
+
+## [2.1.5](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.4...v2.1.5) (2026-07-30)
+
+
+### Bug Fixes
+
+* handle external rotation of the Claude Code credential ([#260](https://github.com/griffinmartin/opencode-claude-auth/issues/260)) ([5a44883](https://github.com/griffinmartin/opencode-claude-auth/commit/5a44883817bfc7f1aa497f2c06432d7e5c472c08))
+* refresh OAuth tokens with native fetch instead of a subprocess ([#258](https://github.com/griffinmartin/opencode-claude-auth/issues/258)) ([231165b](https://github.com/griffinmartin/opencode-claude-auth/commit/231165b9859c6195c412896e1207daf2aed4affa))
+
 ## [2.1.4](https://github.com/griffinmartin/opencode-claude-auth/compare/v2.1.3...v2.1.4) (2026-07-26)
 
 

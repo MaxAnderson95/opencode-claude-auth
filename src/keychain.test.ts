@@ -14,6 +14,7 @@ import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import {
   buildAccountLabels,
+  credentialBlobMatches,
   keychainSuffixForDir,
   parseCredentials,
   readAllClaudeAccounts as readAllClaudeAccountsReal,
@@ -23,10 +24,7 @@ import {
 } from "./keychain.ts"
 
 // Mirrors listClaudeKeychainServices regex logic for unit testing
-async function loadKeychainWithMockedSecurity(
-  securityDump: string,
-  keychainEntries: Record<string, string>,
-): Promise<{
+type MockedKeychain = {
   readAllClaudeAccounts: () => Array<{
     label: string
     source: string
@@ -38,7 +36,19 @@ async function loadKeychainWithMockedSecurity(
       subscriptionType?: string
     }
   }>
-}> {
+  writeBackCredentials: (
+    source: string,
+    creds: { accessToken: string; refreshToken: string; expiresAt: number },
+    configDir?: string,
+    expectedPriorAccessToken?: string,
+  ) => boolean
+  __getSecurityWrites: () => Array<{ service: string; value: string }>
+}
+
+async function loadKeychainWithMockedSecurity(
+  securityDump: string,
+  keychainEntries: Record<string, string>,
+): Promise<MockedKeychain> {
   const tempDir = await mkdtemp(
     join(tmpdir(), "opencode-claude-auth-keychain-"),
   )
@@ -81,11 +91,23 @@ export function execSync(command) {
   throw new Error("unexpected execSync call: " + command)
 }
 
+const securityWrites = []
+
 export function execFileSync(file, args) {
   if (file !== "/usr/bin/security") {
     throw new Error("unexpected execFileSync file: " + file)
   }
   const service = args[args.indexOf("-s") + 1]
+
+  // add-generic-password is the write path. Record it and mutate the backing
+  // store, so a test can tell "the write was skipped" from "the write ran".
+  if (args[0] === "add-generic-password") {
+    const value = args[args.indexOf("-w") + 1]
+    securityWrites.push({ service, value })
+    keychainEntries[service] = value
+    return ""
+  }
+
   const raw = keychainEntries[service]
   if (raw === undefined) {
     const error = new Error("The specified item could not be found in the keychain.")
@@ -95,25 +117,23 @@ export function execFileSync(file, args) {
   }
   return raw
 }
+
+export function __getSecurityWrites() {
+  return securityWrites
+}
 `,
     "utf8",
   )
 
   await writeFile(tempKeychain, rewritten, "utf8")
-  const keychainModule = await import(pathToFileURL(tempKeychain).href)
-  return keychainModule as {
-    readAllClaudeAccounts: () => Array<{
-      label: string
-      source: string
-      configDir?: string
-      credentials: {
-        accessToken: string
-        refreshToken: string
-        expiresAt: number
-        subscriptionType?: string
-      }
-    }>
-  }
+  const [keychainModule, childProcessModule] = await Promise.all([
+    import(pathToFileURL(tempKeychain).href),
+    import(pathToFileURL(tempChildProcess).href),
+  ])
+  return {
+    ...keychainModule,
+    __getSecurityWrites: childProcessModule.__getSecurityWrites,
+  } as MockedKeychain
 }
 
 function extractServicesFromDump(output: string): string[] {
@@ -582,6 +602,42 @@ describe("updateCredentialBlob", () => {
   })
 })
 
+describe("credentialBlobMatches", () => {
+  const blob = JSON.stringify({
+    claudeAiOauth: {
+      accessToken: "account-a",
+      refreshToken: "rt-a",
+      expiresAt: 1,
+    },
+  })
+
+  it("accepts a blob still holding the expected token", () => {
+    assert.equal(credentialBlobMatches(blob, "account-a"), true)
+  })
+
+  it("rejects a blob replaced by another account", () => {
+    assert.equal(credentialBlobMatches(blob, "account-b"), false)
+  })
+
+  it("rejects an unparseable blob rather than assuming a match", () => {
+    assert.equal(credentialBlobMatches("not json", "account-a"), false)
+  })
+
+  // The guard validates through parseCredentials; the write it protects uses
+  // updateCredentialBlob, which would rewrite this blob happily. Pinning the
+  // stricter side so the divergence is a decision rather than an accident.
+  it("rejects a blob whose token matches but whose other fields are malformed", () => {
+    const malformed = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "account-a",
+        refreshToken: 12345,
+        expiresAt: "soon",
+      },
+    })
+    assert.equal(credentialBlobMatches(malformed, "account-a"), false)
+  })
+})
+
 describe("writeBackCredentials (file source)", () => {
   // These tests isolate via HOME; unset CLAUDE_CONFIG_DIR so an ambient value
   // (e.g. in CI or a dev shell) doesn't redirect the credentials path.
@@ -628,6 +684,103 @@ describe("writeBackCredentials (file source)", () => {
       const written = JSON.parse(readFileSync(credPath, "utf-8"))
       assert.equal(written.claudeAiOauth.accessToken, "new-at")
       assert.equal(written.claudeAiOauth.subscriptionType, "pro")
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("writes when the stored token still matches the expected one", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-cas-"))
+    process.env.HOME = tempHome
+
+    try {
+      const claudeDir = join(tempHome, ".claude")
+      mkdirSync(claudeDir, { recursive: true })
+      const credPath = join(claudeDir, ".credentials.json")
+      writeFileSync(
+        credPath,
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "old-at",
+            refreshToken: "old-rt",
+            expiresAt: 1000,
+            subscriptionType: "pro",
+          },
+        }),
+        { encoding: "utf-8", mode: 0o600 },
+      )
+
+      const result = writeBackCredentials(
+        "file",
+        {
+          accessToken: "new-at",
+          refreshToken: "new-rt",
+          expiresAt: 2000,
+        },
+        undefined,
+        "old-at",
+      )
+
+      assert.equal(result, true, "a matching guard must not block the write")
+      const written = JSON.parse(readFileSync(credPath, "utf-8"))
+      assert.equal(written.claudeAiOauth.accessToken, "new-at")
+      assert.equal(written.claudeAiOauth.subscriptionType, "pro")
+    } finally {
+      if (typeof originalHome === "string") {
+        process.env.HOME = originalHome
+      } else {
+        delete process.env.HOME
+      }
+      rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("skips the write when the stored token is no longer the expected one", async () => {
+    const originalHome = process.env.HOME
+    const tempHome = await mkdtemp(join(tmpdir(), "opencode-claude-auth-cas-"))
+    process.env.HOME = tempHome
+
+    try {
+      const claudeDir = join(tempHome, ".claude")
+      mkdirSync(claudeDir, { recursive: true })
+      const credPath = join(claudeDir, ".credentials.json")
+      // Another process switched accounts after we read "expected-at".
+      writeFileSync(
+        credPath,
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "switched-in-at",
+            refreshToken: "switched-in-rt",
+            expiresAt: 1000,
+          },
+        }),
+        { encoding: "utf-8", mode: 0o600 },
+      )
+
+      const result = writeBackCredentials(
+        "file",
+        {
+          accessToken: "our-refreshed-at",
+          refreshToken: "our-refreshed-rt",
+          expiresAt: 2000,
+        },
+        undefined,
+        "expected-at",
+      )
+
+      assert.equal(result, false)
+      const written = JSON.parse(readFileSync(credPath, "utf-8"))
+      assert.equal(
+        written.claudeAiOauth.accessToken,
+        "switched-in-at",
+        "the switched-in credential must survive untouched",
+      )
     } finally {
       if (typeof originalHome === "string") {
         process.env.HOME = originalHome
@@ -773,6 +926,91 @@ describe("writeBackCredentials (file source)", () => {
       rmSync(tempHome, { recursive: true, force: true })
       rmSync(configDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("writeBackCredentials (keychain source)", () => {
+  // The keychain is the primary platform and the reason the compare-and-swap
+  // guard exists, so it needs its own coverage: the file-source tests cannot
+  // reach this branch, and `process.platform` is rewritten to "darwin" by the
+  // harness so these run on any host.
+  const SERVICE = "Claude Code-credentials"
+  const DUMP = `"${SERVICE}"`
+
+  const blob = (accessToken: string) =>
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken,
+        refreshToken: `rt-for-${accessToken}`,
+        expiresAt: 1000,
+        subscriptionType: "max",
+      },
+    })
+
+  const refreshed = {
+    accessToken: "our-refreshed-at",
+    refreshToken: "our-refreshed-rt",
+    expiresAt: 2000,
+  }
+
+  it("skips the write when the stored token is no longer the expected one", async () => {
+    const { writeBackCredentials, __getSecurityWrites } =
+      await loadKeychainWithMockedSecurity(DUMP, {
+        // Another account was switched in after we read "expected-at".
+        [SERVICE]: blob("switched-in-at"),
+      })
+
+    const result = writeBackCredentials(
+      SERVICE,
+      refreshed,
+      undefined,
+      "expected-at",
+    )
+
+    assert.equal(result, false)
+    assert.deepEqual(
+      __getSecurityWrites(),
+      [],
+      "the switched-in credential must survive untouched",
+    )
+  })
+
+  it("writes when the stored token still matches the expected one", async () => {
+    const { writeBackCredentials, __getSecurityWrites } =
+      await loadKeychainWithMockedSecurity(DUMP, {
+        [SERVICE]: blob("expected-at"),
+      })
+
+    const result = writeBackCredentials(
+      SERVICE,
+      refreshed,
+      undefined,
+      "expected-at",
+    )
+
+    assert.equal(result, true)
+    const writes = __getSecurityWrites()
+    assert.equal(writes.length, 1)
+    assert.equal(writes[0].service, SERVICE)
+    const written = JSON.parse(writes[0].value) as {
+      claudeAiOauth: { accessToken: string; subscriptionType: string }
+    }
+    assert.equal(written.claudeAiOauth.accessToken, "our-refreshed-at")
+    assert.equal(
+      written.claudeAiOauth.subscriptionType,
+      "max",
+      "unrelated fields must be preserved",
+    )
+  })
+
+  it("writes without a guard when no expected token is supplied", async () => {
+    const { writeBackCredentials, __getSecurityWrites } =
+      await loadKeychainWithMockedSecurity(DUMP, {
+        [SERVICE]: blob("whatever-is-there"),
+      })
+
+    assert.equal(writeBackCredentials(SERVICE, refreshed), true)
+    assert.equal(__getSecurityWrites().length, 1)
   })
 })
 
