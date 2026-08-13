@@ -12,7 +12,7 @@ export interface ModelConfig {
 }
 
 export const config: ModelConfig = {
-  ccVersion: "2.1.217",
+  ccVersion: "2.1.231",
   baseBetas: [
     "claude-code-20250219",
     "oauth-2025-04-20",
@@ -22,18 +22,14 @@ export const config: ModelConfig = {
     "advisor-tool-2026-03-01",
     "thinking-token-count-2026-05-13",
     "extended-cache-ttl-2025-04-11",
+    "effort-2025-11-24",
   ],
   longContextBetas: [
     "context-1m-2025-08-07",
     "interleaved-thinking-2025-05-14",
   ],
-  // NOTE: getModelOverride is first-match-wins. The "sonnet" key must stay
-  // ahead of "4-6"/"4-7": it shields claude-sonnet-4-6 from the "4-6"
-  // effort add-override, and its exclude strips effort if a user supplies
-  // it via ANTHROPIC_BETA_FLAGS. Do not remove it as inert — the split is
-  // pinned by the "effort beta" test in betas.test.ts.
   modelOverrides: {
-    sonnet: {
+    "sonnet-4-5": {
       exclude: ["effort-2025-11-24"],
     },
     haiku: {
