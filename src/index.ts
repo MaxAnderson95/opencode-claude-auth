@@ -1,4 +1,6 @@
-import type { Plugin } from "@opencode-ai/plugin"
+// The package root now serves the v2 promise API; the legacy hook-object
+// Plugin type this entry implements lives under the /v1 subpath.
+import type { Plugin } from "@opencode-ai/plugin/v1"
 import crypto from "node:crypto"
 import { config } from "./model-config.ts"
 import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
@@ -88,7 +90,7 @@ function getStainlessHeaders(): Record<string, string> {
   }
 }
 
-function buildRequestUrl(input: RequestInfo | URL): string | URL {
+export function buildRequestUrl(input: RequestInfo | URL): string | URL {
   const raw =
     typeof input === "string"
       ? input

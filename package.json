@@ -47,6 +47,14 @@
     "./opencode-claude-auth.js": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./v2": {
+      "types": "./dist/v2.d.ts",
+      "import": "./dist/v2.js"
+    },
+    "./v2.js": {
+      "types": "./dist/v2.d.ts",
+      "import": "./dist/v2.js"
     }
   },
   "scripts": {
@@ -64,7 +72,7 @@
     "prepublishOnly": "pnpm run build && pnpm test"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "latest",
+    "@opencode-ai/plugin": "0.0.0-next-17403",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
