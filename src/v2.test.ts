@@ -22,6 +22,7 @@ interface ClaudeCredentials {
 
 const SOURCE_FILES = [
   "v2-setup.ts",
+  "oauth.ts",
   "index.ts",
   "betas.ts",
   "model-config.ts",
@@ -130,7 +131,15 @@ type TransformCallback = (draft: never) => void
 
 interface FakeCtxOptions {
   activeConnection?: { type: "credential"; id: string; label: string }
-  resolvedCredential?: { type: "key"; key: string } | { type: "oauth" }
+  resolvedCredential?:
+    | { type: "key"; key: string }
+    | {
+        type: "oauth"
+        methodID: string
+        access: string
+        refresh: string
+        expires: number
+      }
 }
 
 function makeCtx(opts: FakeCtxOptions = {}) {
@@ -146,8 +155,20 @@ function makeCtx(opts: FakeCtxOptions = {}) {
         return registration
       },
       connection: {
-        active: async () => opts.activeConnection,
-        resolve: async () => opts.resolvedCredential,
+        active: async () =>
+          opts.activeConnection ?? {
+            type: "credential",
+            id: "cred_subscription",
+            label: "Claude subscription",
+          },
+        resolve: async () =>
+          opts.resolvedCredential ?? {
+            type: "oauth",
+            methodID: "claude-subscription",
+            access: "token",
+            refresh: "refresh",
+            expires: freshExpiry(),
+          },
       },
     },
     catalog: {
@@ -225,6 +246,40 @@ function requestEvt(request: Request): Record<string, unknown> {
 }
 
 describe("v2 http.request hook", () => {
+  it("uses a stable Claude session ID per OpenCode session and credential", async () => {
+    const { setupModule } = await loadV2(freshExpiry())
+    const bundle = makeCtx()
+
+    await withSetup(setupModule, bundle, async () => {
+      const hook = bundle.hooks.get("http.request")!
+      const makeEvent = (sessionID: string) => ({
+        ...requestEvt(
+          messagesRequest({
+            model: "claude-opus-5",
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        ),
+        sessionID,
+      })
+      const first = makeEvent("ses_first")
+      const same = makeEvent("ses_first")
+      const other = makeEvent("ses_other")
+
+      await hook(first)
+      await hook(same)
+      await hook(other)
+
+      const header = (event: Record<string, unknown>) =>
+        (event.request as Request).headers.get("x-claude-code-session-id")
+      assert.match(
+        header(first) ?? "",
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      )
+      assert.equal(header(first), header(same))
+      assert.notEqual(header(first), header(other))
+    })
+  })
+
   it("injects auth headers, merges betas, and rewrites the body", async () => {
     const { setupModule } = await loadV2(freshExpiry())
     const bundle = makeCtx()
@@ -398,29 +453,16 @@ describe("v2 catalog transform", () => {
 })
 
 describe("v2 integration method", () => {
-  it("registers a refresh-less claude-code oauth method whose authorize maps store credentials", async () => {
-    const now = Date.now()
-    const { setupModule } = await loadV2(now + 10 * 60 * 60 * 1000 + 0.5)
+  it("registers direct subscription authorization and refresh", async () => {
+    const { setupModule } = await loadV2(freshExpiry())
     const bundle = makeCtx()
 
     await withSetup(setupModule, bundle, async () => {
       interface Registered {
         integrationID: string
         method: { id: string; type: string; label: string }
-        refresh?: unknown
-        authorize: (answer: Record<string, unknown>) => Promise<{
-          url: string
-          instructions: string
-          mode: string
-          callback: Promise<{
-            type: string
-            methodID: string
-            access: string
-            refresh: string
-            expires: number
-            metadata?: Record<string, unknown>
-          }>
-        }>
+        refresh?: (credential: unknown) => Promise<unknown>
+        authorize: (answer: Record<string, unknown>) => Promise<unknown>
         label?: (credential: {
           metadata?: Record<string, unknown>
         }) => string | undefined
@@ -436,139 +478,46 @@ describe("v2 integration method", () => {
       assert.equal(updates.length, 1)
       const registered = updates[0]
       assert.equal(registered.integrationID, "anthropic")
-      assert.equal(registered.method.id, "claude-code")
+      assert.equal(registered.method.id, "claude-subscription")
       assert.equal(registered.method.type, "oauth")
-      assert.equal(
-        registered.refresh,
-        undefined,
-        "the plugin owns refresh; the host must never rotate our tokens",
-      )
-
-      const authorization = await registered.authorize({})
-      assert.equal(authorization.mode, "auto")
-      assert.ok(authorization.instructions.includes("Account 1"))
-
-      const credential = await authorization.callback
-      assert.equal(credential.type, "oauth")
-      assert.equal(credential.methodID, "claude-code")
-      assert.equal(credential.access, "token")
-      assert.equal(credential.refresh, "refresh")
-      assert.equal(
-        credential.expires,
-        Math.floor(now + 10 * 60 * 60 * 1000 + 0.5),
-        "expires must be floored to an integer",
-      )
-      assert.equal(
-        registered.label?.({ metadata: credential.metadata }),
-        "Account 1",
-      )
+      assert.equal(registered.method.label, "Claude Pro/Max subscription")
+      assert.equal(typeof registered.authorize, "function")
+      assert.equal(typeof registered.refresh, "function")
+      assert.equal(registered.label?.({}), "Claude subscription")
     })
   })
 })
 
 describe("v2 http.response hook", () => {
-  it("retries a 401 once with an externally rotated token and swaps the response", async () => {
-    const originalFetch = globalThis.fetch
-    const { setupModule, keychainModule } = await loadV2(freshExpiry())
-    const bundle = makeCtx()
-
-    const retryAuthHeaders: string[] = []
-    try {
-      await withSetup(setupModule, bundle, async () => {
-        const requestHook = bundle.hooks.get("http.request")!
-        const responseHook = bundle.hooks.get("http.response")!
-
-        const evt = requestEvt(
-          messagesRequest({
-            model: "claude-sonnet-4-6",
-            messages: [{ role: "user", content: "hello" }],
-          }),
-        )
-        await requestHook(evt)
-
-        // Another process rotates the shared store after the request went out.
-        keychainModule.__setCredentials({
-          accessToken: "rotated-token",
-          refreshToken: "rotated-refresh",
-          expiresAt: freshExpiry(),
-        })
-
-        globalThis.fetch = (async (
-          _input: RequestInfo | URL,
-          init?: RequestInit,
-        ) => {
-          retryAuthHeaders.push(
-            new Headers(init?.headers).get("authorization") ?? "",
-          )
-          return new Response("data: {}\n\n", { status: 200 })
-        }) as typeof fetch
-
-        const responseEvt = {
-          ...evt,
-          response: new Response('{"error":"expired"}', { status: 401 }),
-        }
-        await responseHook(responseEvt)
-
-        const response = responseEvt.response as Response
-        assert.equal(response.status, 200)
-        assert.deepEqual(retryAuthHeaders, ["Bearer rotated-token"])
-        assert.equal(await response.text(), "data: {}\n\n")
-      })
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  it("surfaces the 401 unchanged when recovery cannot progress", async () => {
-    const originalFetch = globalThis.fetch
+  it("surfaces a 401 unchanged", async () => {
     const { setupModule } = await loadV2(freshExpiry())
     const bundle = makeCtx()
 
-    let apiRetries = 0
-    try {
-      await withSetup(setupModule, bundle, async () => {
-        const requestHook = bundle.hooks.get("http.request")!
-        const responseHook = bundle.hooks.get("http.response")!
+    await withSetup(setupModule, bundle, async () => {
+      const requestHook = bundle.hooks.get("http.request")!
+      const responseHook = bundle.hooks.get("http.response")!
 
-        const evt = requestEvt(
-          messagesRequest({
-            model: "claude-sonnet-4-6",
-            messages: [{ role: "user", content: "hello" }],
-          }),
-        )
-        await requestHook(evt)
+      const evt = requestEvt(
+        messagesRequest({
+          model: "claude-sonnet-4-6",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      )
+      await requestHook(evt)
 
-        globalThis.fetch = (async (input: RequestInfo | URL) => {
-          const url = typeof input === "string" ? input : String(input)
-          if (url.includes("/oauth/token")) {
-            // retry-after beyond the 30s cap makes fetchWithRetry return
-            // instead of backing off, so the forced refresh fails fast.
-            return new Response('{"error":"rate_limited"}', {
-              status: 429,
-              headers: { "retry-after": "3600" },
-            })
-          }
-          apiRetries += 1
-          return new Response("should not be reached", { status: 200 })
-        }) as typeof fetch
-
-        const errorBody = '{"error":{"type":"authentication_error"}}'
-        const original = new Response(errorBody, {
-          status: 401,
-          headers: { "x-request-id": "unchanged-401" },
-        })
-        const responseEvt = { ...evt, response: original }
-        await responseHook(responseEvt)
-
-        const response = responseEvt.response as Response
-        assert.equal(response.status, 401)
-        assert.equal(response.headers.get("x-request-id"), "unchanged-401")
-        assert.equal(await response.text(), errorBody)
-        assert.equal(apiRetries, 0, "no retry without a different token")
+      const errorBody = '{"error":{"type":"authentication_error"}}'
+      const original = new Response(errorBody, {
+        status: 401,
+        headers: { "x-request-id": "unchanged-401" },
       })
-    } finally {
-      globalThis.fetch = originalFetch
-    }
+      const responseEvt = { ...evt, response: original }
+      await responseHook(responseEvt)
+
+      const response = responseEvt.response as Response
+      assert.equal(response.status, 401)
+      assert.equal(response.headers.get("x-request-id"), "unchanged-401")
+      assert.equal(await response.text(), errorBody)
+    })
   })
 
   it("strips mcp_ tool-name prefixes from the response stream", async () => {
