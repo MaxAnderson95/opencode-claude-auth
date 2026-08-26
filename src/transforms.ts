@@ -44,7 +44,7 @@ function unprefixName(name: string): string {
 }
 
 export const SYSTEM_IDENTITY =
-  "You are Claude Code, Anthropic's official CLI for Claude."
+  "You are a Claude agent, built on Anthropic's Claude Agent SDK."
 
 type SystemEntry = { type?: string; text?: string } & Record<string, unknown>
 type ContentBlock = { type?: string; text?: string } & Record<string, unknown>
@@ -363,8 +363,12 @@ export function transformBody(
   try {
     const parsed = JSON.parse(body) as {
       model?: string
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      max_tokens?: number
       system?: SystemEntry[]
       thinking?: Record<string, unknown>
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      context_management?: Record<string, unknown>
       // eslint-disable-next-line @typescript-eslint/naming-convention
       output_config?: Record<string, unknown>
       tools?: Array<{ name?: string } & Record<string, unknown>>
@@ -378,13 +382,12 @@ export function transformBody(
 
     // --- Billing header: inject as system[0] (no cache_control) ---
     const version = process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
-    const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? "cli"
+    const versionSuffix =
+      process.env.ANTHROPIC_CLI_VERSION_SUFFIX ?? config.ccVersionSuffix
+    const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? "sdk-cli"
     const billingHeader = buildBillingHeaderValue(
-      (parsed.messages ?? []) as Array<{
-        role?: string
-        content?: string | Array<{ type?: string; text?: string }>
-      }>,
       version,
+      versionSuffix,
       entrypoint,
     )
 
@@ -474,6 +477,20 @@ export function transformBody(
     // rejects the effort parameter with a 400 error.
     const modelId = parsed.model ?? ""
     const override = getModelOverride(modelId)
+    if (
+      override?.maxTokens !== undefined &&
+      (parsed.max_tokens === undefined ||
+        parsed.max_tokens > override.maxTokens)
+    ) {
+      parsed.max_tokens = override.maxTokens
+    }
+    if (override?.adaptiveThinking) {
+      parsed.thinking ??= { type: "adaptive", display: "omitted" }
+      parsed.output_config ??= { effort: "medium" }
+      parsed.context_management ??= {
+        edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+      }
+    }
     if (override?.disableEffort) {
       if (parsed.output_config) {
         delete parsed.output_config.effort

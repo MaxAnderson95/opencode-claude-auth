@@ -417,15 +417,8 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       null,
       "Billing header should not be set as HTTP header (it is injected into system array by transformBody)",
     )
-    assert.ok(
-      headers.get("x-client-request-id"),
-      "Expected x-client-request-id to be set",
-    )
-    assert.match(
-      headers.get("x-client-request-id")!,
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-      "x-client-request-id should be a UUID",
-    )
+    assert.equal(headers.get("accept"), "application/json")
+    assert.equal(headers.get("x-client-request-id"), null)
     assert.ok(
       headers.get("x-claude-code-session-id"),
       "Expected X-Claude-Code-Session-Id to be set",
@@ -437,24 +430,37 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
     )
   })
 
-  it("x-client-request-id is unique per call", () => {
-    const h1 = helpers.buildRequestHeaders(
+  it("strips OpenCode tracing and session-affinity headers", () => {
+    const headers = helpers.buildRequestHeaders(
       "https://api.anthropic.com/v1/messages",
-      { headers: {} },
+      {
+        headers: {
+          b3: "trace",
+          traceparent: "trace",
+          "x-client-request-id": "request",
+          "x-opencode-client": "tui",
+          "x-opencode-project": "global",
+          "x-opencode-session": "session",
+          "x-session-affinity": "session",
+          "x-session-id": "session",
+        },
+      },
       "token",
       "claude-sonnet-4-6",
     )
-    const h2 = helpers.buildRequestHeaders(
-      "https://api.anthropic.com/v1/messages",
-      { headers: {} },
-      "token",
-      "claude-sonnet-4-6",
-    )
-    assert.notEqual(
-      h1.get("x-client-request-id"),
-      h2.get("x-client-request-id"),
-      "Each call should produce a unique x-client-request-id",
-    )
+
+    for (const name of [
+      "b3",
+      "traceparent",
+      "x-client-request-id",
+      "x-opencode-client",
+      "x-opencode-project",
+      "x-opencode-session",
+      "x-session-affinity",
+      "x-session-id",
+    ]) {
+      assert.equal(headers.get(name), null)
+    }
   })
 
   it("X-Claude-Code-Session-Id is stable across calls", () => {
@@ -504,7 +510,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         headers.get("user-agent")?.includes("9.9.9"),
         `Expected user-agent to include 9.9.9, got: ${headers.get("user-agent")}`,
       )
-      assert.ok(headers.get("user-agent")?.includes("(external, cli)"))
+      assert.ok(headers.get("user-agent")?.includes("(external, sdk-cli)"))
     } finally {
       delete process.env.ANTHROPIC_CLI_VERSION
     }
@@ -546,8 +552,8 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
         `Expected billing header to include 9.9.9, got: ${billing}`,
       )
       assert.ok(
-        billing.includes("cc_entrypoint=cli"),
-        `Expected billing header to include cli, got: ${billing}`,
+        billing.includes("cc_entrypoint=sdk-cli"),
+        `Expected billing header to include sdk-cli, got: ${billing}`,
       )
     } finally {
       delete process.env.ANTHROPIC_CLI_VERSION
@@ -821,7 +827,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       ) => Promise<void>
 
       const prefixed =
-        "You are Claude Code, Anthropic's official CLI for Claude.\n\nExisting"
+        "You are a Claude agent, built on Anthropic's Claude Agent SDK.\n\nExisting"
       const output = { system: [prefixed] }
 
       await transform({ model: { providerID: "anthropic" } }, output)
@@ -856,7 +862,7 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
       const output = {
         system: [
           "Existing instruction",
-          "You are Claude Code, Anthropic's official CLI for Claude.\n\nAlready present",
+          "You are a Claude agent, built on Anthropic's Claude Agent SDK.\n\nAlready present",
         ],
       }
 
@@ -864,7 +870,9 @@ export function buildAccountLabels(creds) { return creds.map((_, i) => \`Account
 
       const occurrences = output.system
         .join("\n")
-        .match(/You are Claude Code, Anthropic's official CLI for Claude\./g)
+        .match(
+          /You are a Claude agent, built on Anthropic's Claude Agent SDK\./g,
+        )
       assert.equal(occurrences?.length, 1)
     } finally {
       globalThis.setInterval = originalSetInterval

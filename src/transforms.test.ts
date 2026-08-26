@@ -120,7 +120,7 @@ describe("transforms", () => {
     )
   })
 
-  it("transformBody injects billing header as system[0] with computed cch", () => {
+  it("transformBody injects Claude Code 2.1.234 billing identity", () => {
     const input = JSON.stringify({
       system: [{ type: "text", text: "system prompt" }],
       messages: [{ role: "user", content: "hey" }],
@@ -131,10 +131,9 @@ describe("transforms", () => {
       system: Array<{ text: string }>
     }
 
-    assert.ok(parsed.system[0].text.startsWith("x-anthropic-billing-header:"))
-    assert.ok(
-      parsed.system[0].text.includes("cch=fa690"),
-      `Expected cch=fa690 for 'hey', got: ${parsed.system[0].text}`,
+    assert.equal(
+      parsed.system[0].text,
+      "x-anthropic-billing-header: cc_version=2.1.234.1a0; cc_entrypoint=sdk-cli;",
     )
   })
 
@@ -160,7 +159,8 @@ describe("transforms", () => {
   })
 
   it("transformBody splits concatenated identity prefix and relocates remainder to user message", () => {
-    const identity = "You are Claude Code, Anthropic's official CLI for Claude."
+    const identity =
+      "You are a Claude agent, built on Anthropic's Claude Agent SDK."
     const input = JSON.stringify({
       system: [
         {
@@ -188,7 +188,8 @@ describe("transforms", () => {
   })
 
   it("transformBody preserves identity without cache_control and relocates remainder", () => {
-    const identity = "You are Claude Code, Anthropic's official CLI for Claude."
+    const identity =
+      "You are a Claude agent, built on Anthropic's Claude Agent SDK."
     const input = JSON.stringify({
       system: [
         {
@@ -218,7 +219,8 @@ describe("transforms", () => {
   })
 
   it("transformBody does not split identity-only system entry", () => {
-    const identity = "You are Claude Code, Anthropic's official CLI for Claude."
+    const identity =
+      "You are a Claude agent, built on Anthropic's Claude Agent SDK."
     const input = JSON.stringify({
       system: [{ type: "text", text: identity }],
       messages: [{ role: "user", content: "test" }],
@@ -260,16 +262,17 @@ describe("transforms", () => {
       1,
       "Should have exactly one billing header",
     )
-    assert.ok(
-      billingEntries[0].text.includes("cch=fa690"),
-      `Expected computed cch, got: ${billingEntries[0].text}`,
+    assert.equal(
+      billingEntries[0].text,
+      "x-anthropic-billing-header: cc_version=2.1.234.1a0; cc_entrypoint=sdk-cli;",
     )
     // "prompt" should be relocated to user message
     assert.ok(parsed.messages[0].content.includes("prompt"))
   })
 
   it("transformBody relocates multiple non-core system entries to user message as content blocks", () => {
-    const identity = "You are Claude Code, Anthropic's official CLI for Claude."
+    const identity =
+      "You are a Claude agent, built on Anthropic's Claude Agent SDK."
     const input = JSON.stringify({
       system: [
         { type: "text", text: identity },
@@ -326,6 +329,56 @@ describe("transforms", () => {
     // With no messages to relocate into, system stays as-is
     // (billing header + original text)
     assert.ok(parsed.system.length >= 2)
+  })
+
+  it("transformBody matches Claude Code's default Opus 5 inference settings", () => {
+    const output = transformBody(
+      JSON.stringify({
+        model: "claude-opus-5",
+        max_tokens: 128_000,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    )
+    const parsed = JSON.parse(output as string) as {
+      max_tokens: number
+      thinking: unknown
+      output_config: unknown
+      context_management: unknown
+    }
+
+    assert.equal(parsed.max_tokens, 64_000)
+    assert.deepEqual(parsed.thinking, { type: "adaptive", display: "omitted" })
+    assert.deepEqual(parsed.output_config, { effort: "medium" })
+    assert.deepEqual(parsed.context_management, {
+      edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+    })
+  })
+
+  it("transformBody preserves explicit Opus 5 inference settings", () => {
+    const output = transformBody(
+      JSON.stringify({
+        model: "claude-opus-5",
+        max_tokens: 32_000,
+        thinking: { type: "enabled", budget_tokens: 8_000 },
+        output_config: { effort: "high" },
+        context_management: { edits: [] },
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    )
+    const parsed = JSON.parse(output as string) as {
+      max_tokens: number
+      thinking: unknown
+      output_config: unknown
+      context_management: unknown
+    }
+
+    assert.equal(parsed.max_tokens, 32_000)
+    assert.deepEqual(parsed.thinking, {
+      type: "enabled",
+      budget_tokens: 8_000,
+    })
+    assert.deepEqual(parsed.output_config, { effort: "high" })
+    assert.deepEqual(parsed.context_management, { edits: [] })
   })
 
   it("transformBody strips output_config.effort for haiku", () => {

@@ -48,6 +48,7 @@ const TIMEOUT_MS = 30_000
 const MODEL_CONFIG_PATH = join(__dirname, "..", "src", "model-config.ts")
 
 const ALL_MODELS = [
+  "claude-opus-5",
   "claude-opus-4-7",
   "claude-sonnet-4-6",
   "claude-opus-4-6",
@@ -388,7 +389,13 @@ export function updateModelConfig(
       ]
 
       // Only write the override if there's something to override
-      if (exclude.length === 0 && add.length === 0 && !existing.disableEffort) {
+      if (
+        exclude.length === 0 &&
+        add.length === 0 &&
+        !existing.disableEffort &&
+        existing.maxTokens === undefined &&
+        !existing.adaptiveThinking
+      ) {
         continue
       }
 
@@ -405,6 +412,14 @@ export function updateModelConfig(
       // must survive regeneration.
       if (existing.disableEffort) {
         parts.push(`      disableEffort: true,`)
+      }
+      if (existing.maxTokens !== undefined) {
+        parts.push(
+          `      maxTokens: ${existing.maxTokens.toLocaleString("en-US").replaceAll(",", "_")},`,
+        )
+      }
+      if (existing.adaptiveThinking) {
+        parts.push(`      adaptiveThinking: true,`)
       }
 
       const overrideBlock = `    ${overrideKey}: {\n${parts.join("\n")}\n    },`

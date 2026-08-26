@@ -58,12 +58,7 @@ export {
   refreshAccountsList,
   type ClaudeCredentials,
 } from "./credentials.ts"
-export {
-  buildBillingHeaderValue,
-  computeCch,
-  computeVersionSuffix,
-  extractFirstUserMessageText,
-} from "./signing.ts"
+export { buildBillingHeaderValue } from "./signing.ts"
 
 function getCliVersion(): string {
   return process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
@@ -72,7 +67,7 @@ function getCliVersion(): string {
 function getUserAgent(): string {
   return (
     process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${getCliVersion()} (external, cli)`
+    `claude-cli/${getCliVersion()} (external, sdk-cli)`
   )
 }
 
@@ -82,7 +77,7 @@ function getStainlessHeaders(): Record<string, string> {
     "x-stainless-lang": "js",
     "x-stainless-os":
       process.platform === "darwin" ? "MacOS" : process.platform,
-    "x-stainless-package-version": "0.81.0",
+    "x-stainless-package-version": "0.112.1",
     "x-stainless-retry-count": "0",
     "x-stainless-runtime": "node",
     "x-stainless-runtime-version": process.version,
@@ -152,7 +147,7 @@ export function buildRequestHeaders(
         .map((item) => item.trim())
         .filter(Boolean),
     ]),
-  ]
+  ].filter((beta) => beta !== "fine-grained-tool-streaming-2025-05-14")
 
   headers.set("authorization", `Bearer ${accessToken}`)
   headers.set("anthropic-version", "2023-06-01")
@@ -160,12 +155,24 @@ export function buildRequestHeaders(
   headers.set("anthropic-dangerous-direct-browser-access", "true")
   headers.set("x-app", "cli")
   headers.set("user-agent", getUserAgent())
-  headers.set("x-client-request-id", crypto.randomUUID())
   headers.set("X-Claude-Code-Session-Id", sessionId)
   for (const [key, value] of Object.entries(getStainlessHeaders())) {
     if (!headers.has(key)) headers.set(key, value)
   }
   headers.delete("x-api-key")
+  headers.set("accept", "application/json")
+  for (const name of [
+    "b3",
+    "traceparent",
+    "x-client-request-id",
+    "x-opencode-client",
+    "x-opencode-project",
+    "x-opencode-session",
+    "x-session-affinity",
+    "x-session-id",
+  ]) {
+    headers.delete(name)
+  }
 
   return headers
 }

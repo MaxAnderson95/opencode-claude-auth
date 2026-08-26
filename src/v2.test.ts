@@ -12,7 +12,7 @@ process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = mkdtempSync(
 )
 
 const SYSTEM_IDENTITY =
-  "You are Claude Code, Anthropic's official CLI for Claude."
+  "You are a Claude agent, built on Anthropic's Claude Agent SDK."
 
 interface ClaudeCredentials {
   accessToken: string
@@ -254,12 +254,13 @@ describe("v2 http.request hook", () => {
       assert.equal(request.headers.get("anthropic-version"), "2023-06-01")
 
       const betas = (request.headers.get("anthropic-beta") ?? "").split(",")
-      // Host defaults survive the merge (append, don't clobber) ...
+      // Claude Code's current beta set replaces stale host-only flags.
       assert.ok(betas.includes("interleaved-thinking-2025-05-14"))
-      assert.ok(betas.includes("fine-grained-tool-streaming-2025-05-14"))
-      // ... and the Claude Code base betas are added.
+      assert.ok(!betas.includes("fine-grained-tool-streaming-2025-05-14"))
       assert.ok(betas.includes("claude-code-20250219"))
       assert.ok(betas.includes("oauth-2025-04-20"))
+      assert.ok(betas.includes("fallback-credit-2026-06-01"))
+      assert.ok(betas.includes("mid-conversation-system-2026-04-07"))
 
       const body = JSON.parse(await request.text()) as {
         system: Array<{ type: string; text: string }>

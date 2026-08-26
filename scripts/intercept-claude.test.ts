@@ -199,6 +199,24 @@ describe("updateModelConfig", () => {
     )
   })
 
+  it("preserves Opus 5 request-shape overrides during regeneration", () => {
+    const diffs = new Map<string, { added: string[]; removed: string[] }>()
+    diffs.set("claude-opus-5", {
+      added: ["new-opus-beta"],
+      removed: [],
+    })
+
+    updateModelConfig(
+      {
+        modelBetaDiffs: diffs,
+      },
+      configPath,
+    )
+    const result = readFileSync(configPath, "utf-8")
+    assert.ok(result.includes("maxTokens: 64_000"))
+    assert.ok(result.includes("adaptiveThinking: true"))
+  })
+
   it("preserves file structure outside of updated sections", () => {
     updateModelConfig(
       {
