@@ -28,8 +28,8 @@ trap cleanup EXIT
 
 "$bun_bin" build "$repo_root/src/v2.ts" \
   --target=bun \
-  --outfile "$staging/v2.js"
-test -s "$staging/v2.js"
+  --outfile "$staging/index.js"
+test -s "$staging/index.js"
 
 release="$release_root/$release_id"
 if [[ -e "$release" ]]; then

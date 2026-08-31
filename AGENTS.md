@@ -1,6 +1,6 @@
 # Live plugin safety
 
-OpenCode loads this plugin from `~/.config/opencode/plugins/opencode-claude-auth/current/v2.js`. Its background service watches the loaded module graph. Editing or rebuilding inside the live plugin directory can reload a partially written graph and deadlock every session attached to that service.
+OpenCode loads this plugin from the directory `~/.config/opencode/plugins/opencode-claude-auth/current`, whose entrypoint is `index.js`. Its background service watches the loaded module graph. Editing or rebuilding inside the live plugin directory can reload a partially written module and deadlock every session attached to that service.
 
 ## Development workflow
 

@@ -27,14 +27,14 @@ pnpm install --frozen-lockfile
 pnpm run deploy:live
 ```
 
-`deploy:live` runs the test suite, lint, TypeScript build, and Bun bundle in the source checkout. It publishes a self-contained bundle under `~/.local/share/opencode/plugin-releases/opencode-claude-auth/` and atomically updates `~/.config/opencode/plugins/opencode-claude-auth/current`.
+`deploy:live` runs the test suite, lint, TypeScript build, and Bun bundle in the source checkout. It publishes a self-contained `index.js` under `~/.local/share/opencode/plugin-releases/opencode-claude-auth/` and atomically updates `~/.config/opencode/plugins/opencode-claude-auth/current`.
 
 Configure OpenCode to load that immutable entrypoint in `~/.config/opencode/opencode.jsonc`:
 
 ```jsonc
 {
   "plugin": [
-    "file:///Users/max/.config/opencode/plugins/opencode-claude-auth/current/v2.js",
+    "file:///Users/max/.config/opencode/plugins/opencode-claude-auth/current",
   ],
 }
 ```
@@ -172,7 +172,7 @@ Use `pnpm run deploy:live` for the final verified deployment rather than copying
 
 | Symptom                                                  | Action                                                                                                                                                    |
 | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Claude Pro/Max subscription` is missing from `/connect` | Confirm OpenCode loads `current/v2.js`, deploy again from the source checkout, then restart the service once.                                             |
+| `Claude Pro/Max subscription` is missing from `/connect` | Confirm OpenCode loads the `current` plugin directory, deploy again from the source checkout, then restart the service once.                              |
 | Browser authorization does not complete                  | Confirm the browser can reach the localhost callback and retry `/connect`.                                                                                |
 | `Claude subscription credentials are unavailable`        | Connect or activate an Anthropic subscription credential through `/connect`.                                                                              |
 | OAuth refresh fails                                      | Reconnect that account. Do not run Claude Code; it is not the credential source.                                                                          |
