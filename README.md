@@ -28,9 +28,7 @@ The package's root and server exports resolve to `src/v2.ts`. The equivalent con
 
 ```jsonc
 {
-  "plugin": [
-    "github:MaxAnderson95/opencode-claude-auth#main",
-  ],
+  "plugin": ["github:MaxAnderson95/opencode-claude-auth#main"],
 }
 ```
 
@@ -160,7 +158,7 @@ Run the repository checks from the source checkout:
 ```sh
 pnpm test
 pnpm run lint
-pnpm run build
+pnpm run compile
 ```
 
 Use `pnpm run deploy:live` for the final verified deployment rather than copying individual files into the live plugin directory.
