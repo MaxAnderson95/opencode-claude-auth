@@ -17,7 +17,8 @@
   "files": [
     "opencode-claude-auth.js",
     "dist",
-    "installation.md"
+    "installation.md",
+    "src"
   ],
   "type": "module",
   "main": "opencode-claude-auth.js",
@@ -26,11 +27,11 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./opencode-claude-auth.js"
+      "import": "./src/v2.ts"
     },
     "./server": {
       "types": "./dist/index.d.ts",
-      "import": "./opencode-claude-auth.js"
+      "import": "./src/v2.ts"
     },
     "./claude-auth-plugin": {
       "types": "./dist/index.d.ts",
@@ -59,7 +60,6 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc && cp src/anthropic-prompt.txt dist/",
-    "deploy:live": "scripts/deploy-live.sh",
     "test": "node --test --experimental-strip-types src/**/*.test.ts scripts/**/*.test.ts",
     "test:models": "pnpm run build && node scripts/test-models.ts",
     "test:headless": "pnpm run build && node --experimental-strip-types scripts/test-headless.ts",
@@ -80,7 +80,7 @@
     "typescript": "^5.0.0"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "*"
+    "@opencode-ai/plugin": "0.0.0-next-17403"
   },
   "packageManager": "pnpm@10.32.1"
 }

@@ -18,34 +18,29 @@ Claude Code is not required.
 
 ## Install
 
-Keep the source checkout outside OpenCode's live plugin directory. The background service watches loaded plugin files, so building directly under `~/.config/opencode/plugins/` can expose it to a partially written module graph.
+Install the V2 package from this fork on GitHub:
 
 ```sh
-git clone https://github.com/MaxAnderson95/opencode-claude-auth.git ~/Projects_personal/opencode-claude-auth
-cd ~/Projects_personal/opencode-claude-auth
-pnpm install --frozen-lockfile
-pnpm run deploy:live
+opencode2 plugin add 'github:MaxAnderson95/opencode-claude-auth#main'
 ```
 
-`deploy:live` runs the test suite, lint, TypeScript build, and Bun bundle in the source checkout. It publishes a self-contained `index.js` under `~/.local/share/opencode/plugin-releases/opencode-claude-auth/` and atomically updates `~/.config/opencode/plugins/opencode-claude-auth/current`.
-
-Configure OpenCode to load that immutable entrypoint in `~/.config/opencode/opencode.jsonc`:
+The package's root and server exports resolve to `src/v2.ts`. The equivalent configuration is:
 
 ```jsonc
 {
   "plugin": [
-    "file:///Users/max/.config/opencode/plugins/opencode-claude-auth/current",
+    "github:MaxAnderson95/opencode-claude-auth#main",
   ],
 }
 ```
 
-Use an absolute `file://` URL and adjust the home directory when installing for another user. Then restart the background service once:
+To deploy a change, edit the source checkout, run checks, commit and push to this fork, then update the installed GitHub package:
 
 ```sh
-opencode2 service restart
+opencode2 plugin update 'github:MaxAnderson95/opencode-claude-auth#main'
 ```
 
-The restart interrupts clients attached to that service. Reconnect after it comes back.
+Verify the installed revision and an Anthropic request. OpenCode owns the package cache; source edits alone do not deploy it. If a restart is needed, account for attached clients before restarting the service.
 
 ## Connect an account
 
@@ -92,6 +87,8 @@ For subscription OAuth requests, the plugin:
 - Retries long-context beta failures after removing the rejected beta.
 
 The plugin applies these transforms to Anthropic models supplied by OpenCode's catalog. It does not maintain a separate supported-model list.
+
+Pausing a session when Anthropic starts billing extra usage is handled by the separate `overage-guard` plugin, which reads the `anthropic-ratelimit-unified-*` headers on responses this plugin passes through. Load that plugin before this one so the Claude access token is resolved after any pause, not before it.
 
 ## Multiple accounts
 
