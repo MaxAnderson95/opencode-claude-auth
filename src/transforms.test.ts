@@ -120,7 +120,7 @@ describe("transforms", () => {
     )
   })
 
-  it("transformBody injects Claude Code 2.1.234 billing identity", () => {
+  it("transformBody injects Claude Code 2.1.257 billing identity", () => {
     const input = JSON.stringify({
       system: [{ type: "text", text: "system prompt" }],
       messages: [{ role: "user", content: "hey" }],
@@ -133,7 +133,7 @@ describe("transforms", () => {
 
     assert.equal(
       parsed.system[0].text,
-      "x-anthropic-billing-header: cc_version=2.1.234.1a0; cc_entrypoint=sdk-cli;",
+      "x-anthropic-billing-header: cc_version=2.1.257.1a0; cc_entrypoint=sdk-cli;",
     )
   })
 
@@ -264,7 +264,7 @@ describe("transforms", () => {
     )
     assert.equal(
       billingEntries[0].text,
-      "x-anthropic-billing-header: cc_version=2.1.234.1a0; cc_entrypoint=sdk-cli;",
+      "x-anthropic-billing-header: cc_version=2.1.257.1a0; cc_entrypoint=sdk-cli;",
     )
     // "prompt" should be relocated to user message
     assert.ok(parsed.messages[0].content.includes("prompt"))

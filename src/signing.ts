@@ -1,6 +1,6 @@
 /**
  * Build the complete billing header string for insertion into system[0].
- * Claude Code 2.1.234 sends a static build suffix and no content hash.
+ * Claude Code sends a static build suffix and no content hash.
  */
 export function buildBillingHeaderValue(
   version: string,

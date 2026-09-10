@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { setTimeout as delay } from "node:timers/promises"
 import type { Plugin } from "@opencode-ai/plugin"
 import { buildRequestHeaders, buildRequestUrl } from "./index.ts"
 import { initLogger, log } from "./logger.ts"
@@ -139,8 +140,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   // --- Request rewrite: auth header, beta merge, body transforms ---
   registrations.push(
     await ctx.session.hook("http.request", async (evt) => {
-      if (evt.model.providerID !== "anthropic") return
-      if (!owns) return
+      if (evt.model.providerID !== "anthropic" || !owns) return
 
       const requestStartedAt = Date.now()
       const original = evt.request
@@ -237,24 +237,37 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         originalHeaders,
       } = meta
       const signal = evt.request.signal
-      const retry = (
-        token: string,
-        excludedBetas: Set<string>,
-      ): Promise<Response> => {
-        const headers = buildRequestHeaders(
+      const retry = async (excludedBetas: Set<string>): Promise<Response> => {
+        return fetchWithRetry(
           url,
-          { headers: originalHeaders },
-          token,
-          modelId,
-          excludedBetas,
+          {
+            method: evt.request.method,
+            body,
+            signal,
+          },
+          3,
+          async (input, init) => {
+            // Re-resolve on every attempt so a refreshed token is used.
+            const connection =
+              await ctx.integration.connection.active(INTEGRATION_ID)
+            const credential = connection
+              ? await ctx.integration.connection.resolve(connection)
+              : undefined
+            if (credential?.type !== "oauth")
+              throw new Error(
+                "Claude subscription credentials unavailable for retry",
+              )
+            const headers = buildRequestHeaders(
+              url,
+              { headers: originalHeaders },
+              credential.access,
+              modelId,
+              excludedBetas,
+            )
+            headers.set("X-Claude-Code-Session-Id", claudeSessionID)
+            return fetch(input, { ...init, headers })
+          },
         )
-        headers.set("X-Claude-Code-Session-Id", claudeSessionID)
-        return fetchWithRetry(url, {
-          method: evt.request.method,
-          body,
-          headers,
-          signal,
-        })
       }
 
       let response = evt.response
@@ -263,9 +276,6 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         modelId,
         retryAttempt: 0,
       })
-      const tokenInUse =
-        evt.request.headers.get("authorization")?.replace(/^Bearer /, "") ?? ""
-
       // Check for long-context beta errors and retry with betas excluded,
       // one more exclusion per attempt.
       for (let attempt = 0; attempt < LONG_CONTEXT_BETAS.length; attempt++) {
@@ -288,7 +298,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         addExcludedBeta(modelId, betaToExclude)
         log("fetch_beta_excluded", { modelId, excludedBeta: betaToExclude })
 
-        response = await retry(tokenInUse, getExcludedBetas(modelId))
+        response = await retry(getExcludedBetas(modelId))
       }
 
       // Record non-200 responses without writing over OpenCode's terminal UI.
@@ -325,20 +335,30 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   // in through our method mid-session.
   const eventAbort = new AbortController()
   void (async () => {
-    try {
-      for await (const event of ctx.event.subscribe({
-        signal: eventAbort.signal,
-      })) {
-        if (
-          event.type === "integration.connection.updated" &&
-          event.data.integrationID === INTEGRATION_ID
-        ) {
-          await evaluateOwnership()
-          await ctx.catalog.reload()
+    while (!eventAbort.signal.aborted) {
+      try {
+        for await (const event of ctx.event.subscribe({
+          signal: eventAbort.signal,
+        })) {
+          if (
+            event.type === "integration.connection.updated" &&
+            event.data.integrationID === INTEGRATION_ID
+          ) {
+            await evaluateOwnership()
+            await ctx.catalog.reload()
+          }
         }
+      } catch (error) {
+        log("event_stream_ended", {
+          error: error instanceof Error ? error.message : String(error),
+        })
       }
-    } catch {
-      // Subscription ended (shutdown/abort); ownership stays as last evaluated.
+      // Resubscribe so a dropped stream does not freeze ownership at its last value.
+      if (!eventAbort.signal.aborted) {
+        await delay(1000, undefined, { signal: eventAbort.signal }).catch(
+          () => {},
+        )
+      }
     }
   })()
 
