@@ -460,7 +460,12 @@ describe("v2 integration method", () => {
     await withSetup(setupModule, bundle, async () => {
       interface Registered {
         integrationID: string
-        method: { id: string; type: string; label: string }
+        method: {
+          id: string
+          type: string
+          label: string
+          form: { key: string; default: string; options: { value: string }[] }[]
+        }
         refresh?: (credential: unknown) => Promise<unknown>
         authorize: (answer: Record<string, unknown>) => Promise<unknown>
         label?: (credential: {
@@ -481,7 +486,21 @@ describe("v2 integration method", () => {
       assert.equal(registered.method.id, "claude-subscription")
       assert.equal(registered.method.type, "oauth")
       assert.equal(registered.method.label, "Claude Pro/Max subscription")
+      assert.equal(registered.method.form[0].key, "loginMode")
+      assert.equal(registered.method.form[0].default, "auto")
+      assert.deepEqual(
+        registered.method.form[0].options.map((option) => option.value),
+        ["auto", "manual", "local"],
+      )
       assert.equal(typeof registered.authorize, "function")
+      const authorization = (await registered.authorize({
+        loginMode: "manual",
+      })) as { mode: string; url: string }
+      assert.equal(authorization.mode, "code")
+      assert.equal(
+        new URL(authorization.url).searchParams.get("redirect_uri"),
+        "https://platform.claude.com/oauth/code/callback",
+      )
       assert.equal(typeof registered.refresh, "function")
       assert.equal(registered.label?.({}), "Claude subscription")
     })

@@ -113,6 +113,32 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
           id: METHOD_ID,
           type: "oauth",
           label: METHOD_LABEL,
+          form: [
+            {
+              key: "loginMode",
+              type: "string",
+              title: "Authorization method",
+              default: "auto",
+              options: [
+                {
+                  value: "auto",
+                  label: "Automatic",
+                  description:
+                    "Use paste-code login on SSH or headless Linux hosts",
+                },
+                {
+                  value: "manual",
+                  label: "Paste code",
+                  description: "Authorize in a browser on another machine",
+                },
+                {
+                  value: "local",
+                  label: "Local callback",
+                  description: "Browser can reach this server's localhost",
+                },
+              ],
+            },
+          ],
         },
         authorize,
         refresh: refreshCredential,

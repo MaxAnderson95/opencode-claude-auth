@@ -2,6 +2,10 @@ import { createHash, randomBytes } from "node:crypto"
 import { createServer } from "node:http"
 import { request as httpsRequest } from "node:https"
 import type { Credential } from "@opencode-ai/plugin"
+import type {
+  IntegrationOAuthAuthorization,
+  IntegrationOAuthMethodRegistration,
+} from "@opencode-ai/plugin/promise/integration"
 import { config } from "./model-config.ts"
 
 export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -175,10 +179,17 @@ export async function exchangeAuthorizationCode(
   request: Pick<AuthorizationRequest, "verifier" | "redirectUri" | "state">,
   fetcher?: Fetch,
 ): Promise<Credential.OAuth> {
+  const value = code.trim()
+  const separator = value.indexOf("#")
+  const authorizationCode = separator === -1 ? value : value.slice(0, separator)
+  if (!authorizationCode) throw new Error("Missing authorization code")
+  if (separator !== -1 && value.slice(separator + 1) !== request.state) {
+    throw new Error("Invalid OAuth state")
+  }
   const data = await token(
     {
       grant_type: "authorization_code",
-      code: code.trim(),
+      code: authorizationCode,
       state: request.state,
       code_verifier: request.verifier,
       client_id: OAUTH_CLIENT_ID,
@@ -220,20 +231,36 @@ export async function refreshCredential(
   }
 }
 
-export async function authorize(): Promise<
-  | {
-      mode: "auto"
-      url: string
-      instructions: string
-      callback: Promise<Credential.OAuth>
-    }
-  | {
-      mode: "code"
-      url: string
-      instructions: string
-      callback: (code: string) => Promise<Credential.OAuth>
-    }
-> {
+function authorizeManually(): IntegrationOAuthAuthorization {
+  const request = createAuthorizationRequest()
+  return {
+    mode: "code",
+    url: request.url,
+    instructions:
+      "Open this URL in a browser on your own machine, complete authorization, then paste the full code (including #state) here.",
+    callback: (code) => exchangeAuthorizationCode(code, request),
+  }
+}
+
+export async function authorize(
+  answer: Parameters<IntegrationOAuthMethodRegistration["authorize"]>[0] = {},
+): Promise<IntegrationOAuthAuthorization> {
+  // Browser opening belongs to the OpenCode client, which does not report
+  // failures to this server plugin. Server environment is only a heuristic.
+  const headless =
+    process.env.SSH_CONNECTION ||
+    process.env.SSH_CLIENT ||
+    process.env.SSH_TTY ||
+    (process.platform === "linux" &&
+      !process.env.DISPLAY &&
+      !process.env.WAYLAND_DISPLAY)
+  if (
+    answer.loginMode === "manual" ||
+    (answer.loginMode !== "local" && headless)
+  ) {
+    return authorizeManually()
+  }
+
   try {
     const server = createServer()
     await new Promise<void>((resolve, reject) => {
@@ -317,13 +344,6 @@ export async function authorize(): Promise<
       callback,
     }
   } catch {
-    const request = createAuthorizationRequest()
-    return {
-      mode: "code",
-      url: request.url,
-      instructions:
-        "Complete authorization in your browser, then paste the authorization code.",
-      callback: (code) => exchangeAuthorizationCode(code, request),
-    }
+    return authorizeManually()
   }
 }

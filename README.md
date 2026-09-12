@@ -46,9 +46,14 @@ Verify the installed revision and an Anthropic request. OpenCode owns the packag
 2. Run `/connect`.
 3. Select Anthropic.
 4. Select `Claude Pro/Max subscription`.
-5. Complete authorization in the browser.
+5. Choose `Automatic`, `Paste code`, or `Local callback`.
+6. Complete authorization in the browser. For paste-code login, copy the full `code#state` value from Anthropic's page into OpenCode.
 
-The plugin opens an ephemeral callback listener on `http://localhost:<port>/callback`. If it cannot create the listener, OpenCode uses a manual authorization-code flow instead. Both paths use PKCE and validate OAuth state.
+`Automatic` selects paste-code login when the OpenCode server has `SSH_CONNECTION`, `SSH_CLIENT`, or `SSH_TTY` set, or runs on Linux without `DISPLAY` or `WAYLAND_DISPLAY`. Otherwise, it opens an ephemeral callback listener on `http://localhost:<port>/callback`. If it cannot create the listener, it falls back to paste-code login.
+
+Paste-code login redirects to `https://platform.claude.com/oauth/code/callback`, so you can open the authorization URL on your own machine while OpenCode runs on a headless host. The plugin validates the state suffix before exchanging the code and uses the same PKCE verifier and redirect URI throughout the attempt.
+
+Detection uses the server's environment. OpenCode opens the browser in its client and does not report browser-launch failures to the plugin. Choose `Paste code` explicitly when connecting to a remote server that detection misses; choose `Local callback` when the browser can reach the server's localhost, including through an SSH tunnel.
 
 To connect another subscription, repeat `/connect`. OpenCode stores each account as a separate native Anthropic credential. Account activation, labels, and removal are handled by OpenCode rather than by a plugin-specific switcher or file.
 
