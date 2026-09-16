@@ -74,13 +74,14 @@
   },
   "devDependencies": {
     "@opencode-ai/plugin": "0.0.0-next-17403",
+    "@opencode/plugin": "2.0.4",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
     "typescript": "^5.0.0"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "0.0.0-next-17403"
+    "@opencode/plugin": "2.0.4"
   },
   "packageManager": "pnpm@10.32.1"
 }

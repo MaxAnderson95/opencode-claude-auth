@@ -1,11 +1,11 @@
 import { createHash, randomBytes } from "node:crypto"
 import { createServer } from "node:http"
 import { request as httpsRequest } from "node:https"
-import type { Credential } from "@opencode-ai/plugin"
+import type { Credential } from "@opencode/plugin"
 import type {
   IntegrationOAuthAuthorization,
   IntegrationOAuthMethodRegistration,
-} from "@opencode-ai/plugin/promise/integration"
+} from "@opencode/plugin/promise/integration"
 import { config } from "./model-config.ts"
 
 export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"

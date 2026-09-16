@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { setTimeout as delay } from "node:timers/promises"
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin } from "@opencode/plugin"
 import { buildRequestHeaders, buildRequestUrl } from "./index.ts"
 import { initLogger, log } from "./logger.ts"
 import { fetchWithRetry } from "./http.ts"
@@ -149,12 +149,12 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
 
   // --- Zero-cost override: subscription usage is already paid for ---
   registrations.push(
-    await ctx.catalog.transform((draft) => {
+    await ctx.model.transform((draft) => {
       if (!owns) return
       const record = draft.provider.get(INTEGRATION_ID)
       if (!record) return
       for (const modelID of record.models.keys()) {
-        draft.model.update(INTEGRATION_ID, modelID, (model) => {
+        draft.update(INTEGRATION_ID, modelID, (model) => {
           model.cost = []
         })
       }
@@ -356,7 +356,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
     }),
   )
 
-  // Re-evaluate ownership (and re-run the catalog cost transform) when the
+  // Re-evaluate ownership (and re-run the model cost transform) when the
   // anthropic connection changes — e.g. the user connects an API key or logs
   // in through our method mid-session.
   const eventAbort = new AbortController()
@@ -367,11 +367,12 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
           signal: eventAbort.signal,
         })) {
           if (
-            event.type === "integration.connection.updated" &&
-            event.data.integrationID === INTEGRATION_ID
+            event.type === "credential.updated" ||
+            (event.type === "credential.switched" &&
+              event.data.integrationID === INTEGRATION_ID)
           ) {
             await evaluateOwnership()
-            await ctx.catalog.reload()
+            await ctx.model.reload()
           }
         }
       } catch (error) {

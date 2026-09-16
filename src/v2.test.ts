@@ -131,6 +131,13 @@ type TransformCallback = (draft: never) => void
 
 interface FakeCtxOptions {
   activeConnection?: { type: "credential"; id: string; label: string }
+  events?: Array<
+    | { type: "credential.updated"; data: Record<string, never> }
+    | {
+        type: "credential.switched"
+        data: { integrationID: string; credentialID: string | null }
+      }
+  >
   resolvedCredential?:
     | { type: "key"; key: string }
     | {
@@ -145,7 +152,9 @@ interface FakeCtxOptions {
 function makeCtx(opts: FakeCtxOptions = {}) {
   const hooks = new Map<string, HookCallback>()
   const integrationTransforms: TransformCallback[] = []
-  const catalogTransforms: TransformCallback[] = []
+  const modelTransforms: TransformCallback[] = []
+  let modelReloads = 0
+  let eventSubscriptions = 0
   const registration = { dispose: async () => {} }
 
   const ctx = {
@@ -171,12 +180,14 @@ function makeCtx(opts: FakeCtxOptions = {}) {
           },
       },
     },
-    catalog: {
+    model: {
       transform: async (cb: TransformCallback) => {
-        catalogTransforms.push(cb)
+        modelTransforms.push(cb)
         return registration
       },
-      reload: async () => {},
+      reload: async () => {
+        modelReloads++
+      },
     },
     session: {
       hook: async (name: string, cb: HookCallback) => {
@@ -185,12 +196,22 @@ function makeCtx(opts: FakeCtxOptions = {}) {
       },
     },
     event: {
-      // Ends immediately: connection-change reactions are exercised live.
-      subscribe: () => (async function* () {})(),
+      subscribe: () => {
+        const events = eventSubscriptions++ === 0 ? (opts.events ?? []) : []
+        return (async function* () {
+          yield* events
+        })()
+      },
     },
   }
 
-  return { ctx, hooks, integrationTransforms, catalogTransforms }
+  return {
+    ctx,
+    hooks,
+    integrationTransforms,
+    modelTransforms,
+    modelReloads: () => modelReloads,
+  }
 }
 
 /** Run setup with HOME redirected so account-state writes stay in a sandbox. */
@@ -400,11 +421,9 @@ describe("v2 http.request hook", () => {
         provider: {
           get: () => ({ provider: { id: "anthropic" }, models: new Map() }),
         },
-        model: {
-          update: (_p: string, m: string) => updates.push(m),
-        },
+        update: (_p: string, m: string) => updates.push(m),
       }
-      for (const transform of bundle.catalogTransforms) {
+      for (const transform of bundle.modelTransforms) {
         transform(draft as never)
       }
       assert.deepEqual(updates, [])
@@ -412,7 +431,7 @@ describe("v2 http.request hook", () => {
   })
 })
 
-describe("v2 catalog transform", () => {
+describe("v2 model transform", () => {
   it("zeroes anthropic model costs when a Claude Code account is active", async () => {
     const { setupModule } = await loadV2(freshExpiry())
     const bundle = makeCtx()
@@ -430,24 +449,42 @@ describe("v2 catalog transform", () => {
               ? { provider: { id: "anthropic" }, models }
               : undefined,
         },
-        model: {
-          update: (
-            providerID: string,
-            modelID: string,
-            update: (model: { cost: unknown }) => void,
-          ) => {
-            assert.equal(providerID, "anthropic")
-            const model = { cost: [{ input: 3, output: 15 }] }
-            update(model)
-            costs.set(modelID, model.cost)
-          },
+        update: (
+          providerID: string,
+          modelID: string,
+          update: (model: { cost: unknown }) => void,
+        ) => {
+          assert.equal(providerID, "anthropic")
+          const model = { cost: [{ input: 3, output: 15 }] }
+          update(model)
+          costs.set(modelID, model.cost)
         },
       }
-      for (const transform of bundle.catalogTransforms) {
+      for (const transform of bundle.modelTransforms) {
         transform(draft as never)
       }
       assert.deepEqual(costs.get("claude-sonnet-4-6"), [])
       assert.deepEqual(costs.get("claude-haiku-4-5"), [])
+    })
+  })
+
+  it("reloads model costs when the active anthropic credential changes", async () => {
+    const { setupModule } = await loadV2(freshExpiry())
+    const bundle = makeCtx({
+      events: [
+        {
+          type: "credential.switched",
+          data: {
+            integrationID: "anthropic",
+            credentialID: "cred_subscription",
+          },
+        },
+      ],
+    })
+
+    await withSetup(setupModule, bundle, async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      assert.equal(bundle.modelReloads(), 1)
     })
   })
 })
