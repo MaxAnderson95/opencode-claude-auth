@@ -15,7 +15,7 @@ export interface ModelConfig {
 }
 
 export const config: ModelConfig = {
-  ccVersion: "2.1.257",
+  ccVersion: "2.1.280",
   ccVersionSuffix: "1a0",
   baseBetas: [
     "claude-code-20250219",

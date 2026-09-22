@@ -3,10 +3,10 @@ import { describe, it } from "node:test"
 import { buildBillingHeaderValue } from "./signing.ts"
 
 describe("signing", () => {
-  it("matches Claude Code 2.1.257 billing identity", () => {
+  it("matches Claude Code 2.1.280 billing identity", () => {
     assert.equal(
-      buildBillingHeaderValue("2.1.257", "1a0", "sdk-cli"),
-      "x-anthropic-billing-header: cc_version=2.1.257.1a0; cc_entrypoint=sdk-cli;",
+      buildBillingHeaderValue("2.1.280", "1a0", "sdk-cli"),
+      "x-anthropic-billing-header: cc_version=2.1.280.1a0; cc_entrypoint=sdk-cli;",
     )
   })
 
