@@ -33,6 +33,9 @@
       "types": "./dist/index.d.ts",
       "import": "./src/v2.ts"
     },
+    "./tui": {
+      "import": "./src/tui.tsx"
+    },
     "./claude-auth-plugin": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -75,9 +78,12 @@
   "devDependencies": {
     "@opencode-ai/plugin": "0.0.0-next-17403",
     "@opencode/plugin": "2.0.4",
+    "@opentui/core": "0.5.12",
+    "@opentui/solid": "0.5.12",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
+    "solid-js": "1.9.15",
     "typescript": "^5.0.0"
   },
   "peerDependencies": {
