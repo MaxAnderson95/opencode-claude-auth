@@ -17,10 +17,23 @@ import {
   transformResponseStream,
 } from "./transforms.ts"
 import { authorize, OAUTH_METHOD_ID, refreshCredential } from "./oauth.ts"
+import { createUsageLimitTracker, UsageLimitRpc } from "./usage-limit.ts"
 
 export const INTEGRATION_ID = "anthropic"
 export const METHOD_ID = OAUTH_METHOD_ID
 export const METHOD_LABEL = "Claude Pro/Max subscription"
+
+// Every location's plugin instance shares this process, so all of them read
+// and update one tracker. It keys quota by account.
+const usageLimits = createUsageLimitTracker()
+
+type ActiveConnection = Awaited<
+  ReturnType<Plugin.Context["integration"]["connection"]["active"]>
+>
+
+function accountID(connection: ActiveConnection): string {
+  return connection?.type === "credential" ? connection.id : "oauth"
+}
 
 type SystemEntry = { type?: string; text?: string } & Record<string, unknown>
 
@@ -58,6 +71,7 @@ export function ensureSystemIdentity(body: string): string {
 interface RequestMeta {
   modelId: string
   claudeSessionID: string
+  account: string
   requestStartedAt: number
   url: string
   body: string | undefined
@@ -103,6 +117,25 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   await evaluateOwnership()
 
   const registrations: Array<{ dispose: () => Promise<void> }> = []
+
+  const activeAccount = async () =>
+    accountID(await ctx.integration.connection.active(INTEGRATION_ID))
+  const usageLimitRpc = await ctx.rpc.register(UsageLimitRpc, {
+    status: async () => usageLimits.status(await activeAccount()),
+  })
+  registrations.push(usageLimitRpc)
+  const publishUsageLimit = async (account: string): Promise<void> => {
+    try {
+      if (account !== (await activeAccount())) return
+      const status = usageLimits.status(account)
+      log("usage_limit_status", { ...status })
+      await usageLimitRpc.events.emit("changed", status)
+    } catch (err) {
+      log("usage_limit_emit_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
 
   // --- Direct Claude subscription OAuth on the Anthropic integration ---
   registrations.push(
@@ -181,10 +214,8 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
           "Claude subscription credentials are unavailable. Connect an account through /connect.",
         )
       }
-      const claudeSessionID = toClaudeSessionID(
-        evt.sessionID,
-        connection?.type === "credential" ? connection.id : "oauth",
-      )
+      const account = accountID(connection)
+      const claudeSessionID = toClaudeSessionID(evt.sessionID, account)
 
       const rawBody = await original.clone().text()
       let modelId = String(evt.model.id)
@@ -215,9 +246,13 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         excluded,
       )
       headers.set("X-Claude-Code-Session-Id", claudeSessionID)
-      const body = rawBody
+      const transformed = rawBody
         ? transformBody(ensureSystemIdentity(rawBody))
         : undefined
+      const body =
+        evt.kind === "primary" && typeof transformed === "string"
+          ? usageLimits.annotate(account, evt.sessionID, transformed)
+          : transformed
 
       const headerKeys: string[] = []
       headers.forEach((_, key) => {
@@ -237,6 +272,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
       requestMeta.set(evt.request, {
         modelId,
         claudeSessionID,
+        account,
         requestStartedAt,
         url,
         body: typeof body === "string" ? body : undefined,
@@ -327,6 +363,10 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         response = await retry(getExcludedBetas(modelId))
       }
 
+      if (usageLimits.observe(meta.account, response.headers)) {
+        await publishUsageLimit(meta.account)
+      }
+
       // Record non-200 responses without writing over OpenCode's terminal UI.
       if (!response.ok) {
         const status = response.status
@@ -373,6 +413,8 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
           ) {
             await evaluateOwnership()
             await ctx.model.reload()
+            // The TUI shows the active account's quota, which just changed.
+            await publishUsageLimit(await activeAccount())
           }
         }
       } catch (error) {

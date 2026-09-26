@@ -93,6 +93,14 @@ The plugin applies these transforms to Anthropic models supplied by OpenCode's c
 
 Pausing a session when Anthropic starts billing extra usage is handled by the separate `overage-guard` plugin, which reads the `anthropic-ratelimit-unified-*` headers on responses this plugin passes through. Load that plugin before this one so the Claude access token is resolved after any pause, not before it.
 
+## Usage limits
+
+The plugin copies Claude Code's usage-limit wrap-up. When a subscription reaches its 5-hour or weekly limit mid-task, Anthropic serves a short grace allowance from the weekly limit and reports it in the `anthropic-ratelimit-unified-grace-5h-utilization` and `-grace-7d-utilization` response headers. While grace is active, the plugin appends Claude Code's checkpoint instruction to the next tool-result message in the agent loop, once per user turn, telling the model to finish the current step and list the remaining work. The instruction stays at that position on later requests so the model keeps seeing it. It skips the instruction when extra usage pays for requests past the limit. Quota state is tracked per credential, so switching accounts does not carry one account's limit into another.
+
+At 95% of the 5-hour window, the plugin sends a similar "approaching" instruction once per window. Claude Code raises that threshold to 99% on Max 5x and 99.75% on Max 20x, but responses do not identify the plan, so the plugin uses the Pro threshold for every account.
+
+The TUI entrypoint (`src/tui.tsx`) shows the state in the prompt footer of Anthropic sessions: `Approaching 5-hour limit · 96%`, `Usage limit reached · wrapping up` while the session runs, and `Usage limit reached · resets <time>` once it stops. The server plugin publishes the state through the `opencode-claude-auth.usage-limit` RPC, and diagnostic logging records each change as `usage_limit_status`.
+
 ## Multiple accounts
 
 Each login creates an independent OpenCode credential with its own access token, refresh token, expiry, and label. Switching the active connection takes effect without restarting OpenCode. Request identity also includes the credential ID, so switching accounts changes the Claude session identity for later requests.

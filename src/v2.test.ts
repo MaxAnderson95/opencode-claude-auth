@@ -33,6 +33,7 @@ const SOURCE_FILES = [
   "refresh-lock.ts",
   "logger.ts",
   "http.ts",
+  "usage-limit.ts",
 ] as const
 
 async function copySourceFiles(tempDir: string): Promise<void> {
@@ -156,6 +157,8 @@ function makeCtx(opts: FakeCtxOptions = {}) {
   let modelReloads = 0
   let eventSubscriptions = 0
   const registration = { dispose: async () => {} }
+  const rpcEvents: Array<{ name: string; data: unknown }> = []
+  const rpcHandlers = new Map<string, () => Promise<unknown>>()
 
   const ctx = {
     integration: {
@@ -203,11 +206,31 @@ function makeCtx(opts: FakeCtxOptions = {}) {
         })()
       },
     },
+    rpc: {
+      register: async (
+        definition: { id: string },
+        handlers: Record<string, () => Promise<unknown>>,
+      ) => {
+        for (const [name, handler] of Object.entries(handlers)) {
+          rpcHandlers.set(`${definition.id}.${name}`, handler)
+        }
+        return {
+          ...registration,
+          events: {
+            emit: async (name: string, data: unknown) => {
+              rpcEvents.push({ name, data })
+            },
+          },
+        }
+      },
+    },
   }
 
   return {
     ctx,
     hooks,
+    rpcEvents,
+    rpcHandlers,
     integrationTransforms,
     modelTransforms,
     modelReloads: () => modelReloads,
@@ -623,6 +646,105 @@ describe("v2 http.response hook", () => {
       }
       await responseHook(responseEvt)
       assert.equal(responseEvt.response, untouched)
+    })
+  })
+})
+
+async function lastContent(evt: Record<string, unknown>) {
+  const body = JSON.parse(await (evt.request as Request).text()) as {
+    messages: Array<{ content: Array<{ type: string; text?: string }> }>
+  }
+  return body.messages.at(-1)!.content
+}
+
+describe("v2 usage-limit wrap-up", () => {
+  it("publishes grace status and nudges the agent loop, not auxiliary requests", async () => {
+    const { setupModule } = await loadV2(freshExpiry())
+    const bundle = makeCtx()
+
+    await withSetup(setupModule, bundle, async () => {
+      const requestHook = bundle.hooks.get("http.request")!
+      const responseHook = bundle.hooks.get("http.response")!
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600
+
+      const first = {
+        ...requestEvt(
+          messagesRequest({
+            model: "claude-opus-5-5",
+            messages: [{ role: "user", content: "go" }],
+          }),
+        ),
+        kind: "primary",
+      }
+      await requestHook(first)
+      await responseHook({
+        ...first,
+        response: new Response("", {
+          status: 200,
+          headers: {
+            "anthropic-ratelimit-unified-status": "allowed",
+            "anthropic-ratelimit-unified-grace-5h-utilization": "0.1",
+            "anthropic-ratelimit-unified-5h-reset": String(resetsAt),
+          },
+        }),
+      })
+
+      const grace = {
+        state: "grace",
+        window: "five_hour",
+        resetsAt,
+        covered: false,
+      }
+      assert.deepEqual(bundle.rpcEvents, [{ name: "changed", data: grace }])
+      assert.deepEqual(
+        await bundle.rpcHandlers.get(
+          "opencode-claude-auth.usage-limit.status",
+        )!(),
+        grace,
+      )
+
+      const midTurn = (kind: string) => ({
+        ...requestEvt(
+          messagesRequest({
+            model: "claude-opus-5-5",
+            messages: [
+              { role: "user", content: "go" },
+              {
+                role: "assistant",
+                content: [
+                  { type: "tool_use", id: "toolu_1", name: "bash", input: {} },
+                ],
+              },
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "tool_result",
+                    tool_use_id: "toolu_1",
+                    content: "ok",
+                  },
+                ],
+              },
+            ],
+          }),
+        ),
+        kind,
+      })
+      const title = midTurn("title")
+      await requestHook(title)
+      assert.deepEqual(
+        (await lastContent(title)).map((block) => block.type),
+        ["tool_result"],
+      )
+
+      const primary = midTurn("primary")
+      await requestHook(primary)
+      const content = await lastContent(primary)
+      assert.equal(content.at(-1)?.type, "text")
+      assert.match(
+        content.at(-1)?.text ?? "",
+        /^\[Usage limit reached \u2014 grace window active\./,
+      )
     })
   })
 })
