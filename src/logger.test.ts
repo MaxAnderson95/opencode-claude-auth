@@ -1,6 +1,12 @@
 import assert from "node:assert/strict"
 import { describe, it, beforeEach, afterEach } from "node:test"
-import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs"
+import {
+  mkdtempSync,
+  readFileSync,
+  existsSync,
+  rmSync,
+  statSync,
+} from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { PassThrough } from "node:stream"
@@ -51,6 +57,8 @@ describe("logger", () => {
       assert.equal(parsed.event, "test_event")
       assert.equal(parsed.key, "value")
       assert.ok(parsed.ts, "should have a timestamp")
+      assert.equal(parsed.pid, process.pid)
+      assert.equal(statSync(logPath).mode & 0o777, 0o600)
     })
 
     it("appends multiple events as separate lines", () => {

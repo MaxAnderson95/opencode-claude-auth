@@ -40,10 +40,15 @@ export default Plugin.define({
           : undefined)
       if (provider !== "anthropic") return
       if (limit.state === "approaching") {
-        return `Approaching 5-hour limit · ${Math.round(limit.utilization * 100)}%`
+        return `Approaching 5-hour limit · ${Math.floor(limit.utilization * 100)}%`
       }
-      if (limit.covered) return "Usage limit reached · using extra usage"
-      if (sessionID && context.data.session.status(sessionID) === "running") {
+      if (limit.state === "grace" && limit.covered)
+        return "Usage limit reached · using extra usage"
+      if (
+        limit.state === "grace" &&
+        sessionID &&
+        context.data.session.status(sessionID) === "running"
+      ) {
         return "Usage limit reached · wrapping up"
       }
       if (limit.resetsAt === null) return "Usage limit reached"

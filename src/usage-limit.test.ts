@@ -58,6 +58,76 @@ function notes(messages: Message[]): Array<[number, string]> {
 }
 
 describe("usage limit status", () => {
+  it("reports reached rather than approaching at 100% without grace", () => {
+    const tracker = createUsageLimitTracker(() => NOW)
+    tracker.observe(
+      ACCOUNT,
+      quota({ "5h-utilization": 1, "5h-reset": IN_ONE_HOUR }),
+    )
+    assert.deepEqual(tracker.status(ACCOUNT), {
+      state: "exhausted",
+      window: "five_hour",
+      resetsAt: IN_ONE_HOUR,
+    })
+  })
+
+  it("reports a rejected limit without requiring utilization headers", () => {
+    const tracker = createUsageLimitTracker(() => NOW)
+    tracker.observe(
+      ACCOUNT,
+      quota({
+        status: "rejected",
+        "representative-claim": "seven_day",
+        reset: IN_ONE_DAY,
+      }),
+    )
+    assert.deepEqual(tracker.status(ACCOUNT), {
+      state: "exhausted",
+      window: "seven_day",
+      resetsAt: IN_ONE_DAY,
+    })
+  })
+
+  it("stops reporting grace when the server rejects further usage", () => {
+    const tracker = createUsageLimitTracker(() => NOW)
+    tracker.observe(
+      ACCOUNT,
+      quota({
+        status: "rejected",
+        "grace-5h-utilization": 1,
+        "representative-claim": "five_hour",
+        "5h-reset": IN_ONE_HOUR,
+      }),
+    )
+    assert.equal(tracker.status(ACCOUNT).state, "exhausted")
+  })
+
+  it("keeps granted grace distinct from a fully used base window", () => {
+    const tracker = createUsageLimitTracker(() => NOW)
+    tracker.observe(
+      ACCOUNT,
+      quota({
+        "5h-utilization": 1,
+        "grace-5h-utilization": 0.1,
+        "5h-reset": IN_ONE_HOUR,
+      }),
+    )
+    assert.equal(tracker.status(ACCOUNT).state, "grace")
+  })
+
+  it("does not report exhaustion when extra usage covers the full window", () => {
+    const tracker = createUsageLimitTracker(() => NOW)
+    tracker.observe(
+      ACCOUNT,
+      quota({
+        "5h-utilization": 1,
+        "5h-reset": IN_ONE_HOUR,
+        "overage-in-use": "true",
+      }),
+    )
+    assert.deepEqual(tracker.status(ACCOUNT), { state: "ok" })
+  })
+
   it("reports 5-hour grace from response headers", () => {
     const tracker = createUsageLimitTracker(() => NOW)
     const headers = quota({

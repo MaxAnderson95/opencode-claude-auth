@@ -42,7 +42,7 @@ export function initLogger(options?: { stream?: Writable }): void {
   // `plugin_init` line, which serves as a natural restart boundary.
   // Touch the file so it exists even before the first log line.
   if (!existsSync(logFilePath)) {
-    writeFileSync(logFilePath, "", "utf-8")
+    writeFileSync(logFilePath, "", { encoding: "utf-8", mode: 0o600 })
   }
 }
 
@@ -51,13 +51,15 @@ export function log(event: string, data?: Record<string, unknown>): void {
 
   const entry = {
     ts: new Date().toISOString(),
+    pid: process.pid,
+    client: process.env.OPENCODE_CLIENT,
     event,
     ...redact(data ?? {}),
   }
   const line = JSON.stringify(entry) + "\n"
 
   if (mode === "file" && logFilePath) {
-    appendFileSync(logFilePath, line, "utf-8")
+    appendFileSync(logFilePath, line, { encoding: "utf-8", mode: 0o600 })
   } else if (mode === "stream" && logStream) {
     logStream.write(line)
   }

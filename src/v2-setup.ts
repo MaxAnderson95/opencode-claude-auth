@@ -254,6 +254,15 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
           ? usageLimits.annotate(account, evt.sessionID, transformed)
           : transformed
 
+      if (body !== transformed) {
+        log("usage_limit_annotation", {
+          sessionID: evt.sessionID,
+          account,
+          modelId,
+          quota: usageLimits.status(account),
+        })
+      }
+
       const headerKeys: string[] = []
       headers.forEach((_, key) => {
         headerKeys.push(key)
@@ -363,6 +372,25 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         response = await retry(getExcludedBetas(modelId))
       }
 
+      // Keep the evidence needed to distinguish included grace from paid
+      // overage, even if the derived status does not change between requests.
+      log("usage_limit_response", {
+        sessionID: evt.sessionID,
+        account: meta.account,
+        modelId,
+        kind: evt.kind,
+        status: response.status,
+        elapsedMs: Date.now() - requestStartedAt,
+        headers: Object.fromEntries(
+          [...response.headers].filter(
+            ([name]) =>
+              name.startsWith("anthropic-ratelimit-") ||
+              name === "retry-after" ||
+              name === "request-id" ||
+              name === "x-request-id",
+          ),
+        ),
+      })
       if (usageLimits.observe(meta.account, response.headers)) {
         await publishUsageLimit(meta.account)
       }

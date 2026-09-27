@@ -99,6 +99,8 @@ The plugin copies Claude Code's usage-limit wrap-up. When a subscription reaches
 
 At 95% of the 5-hour window, the plugin sends a similar "approaching" instruction once per window. Claude Code raises that threshold to 99% on Max 5x and 99.75% on Max 20x, but responses do not identify the plan, so the plugin uses the Pro threshold for every account.
 
+A fully used window without grace or extra-usage coverage, or a rejected quota response, reports "Usage limit reached" with the reset time when available. "Wrapping up" only appears while the server reports grace and the session is running.
+
 The TUI entrypoint (`src/tui.tsx`) shows the state in the prompt footer of Anthropic sessions: `Approaching 5-hour limit · 96%`, `Usage limit reached · wrapping up` while the session runs, and `Usage limit reached · resets <time>` once it stops. The server plugin publishes the state through the `opencode-claude-auth.usage-limit` RPC, and diagnostic logging records each change as `usage_limit_status`.
 
 ## Multiple accounts
@@ -141,6 +143,8 @@ The default log is:
 ```
 
 Set `CLAUDE_AUTH_DEBUG` to an absolute file path to write elsewhere. The logger redacts access tokens, refresh tokens, API keys, and JWT-shaped values. Review logs before sharing them because provider error messages can still contain account or request details.
+
+Each record includes the process ID and `OPENCODE_CLIENT` when set. V2 `usage_limit_response` records include the OpenCode session ID, credential ID, model, HTTP status, elapsed time, and only rate-limit, retry-after, and request-ID response headers. They preserve the distinction between grace utilization and paid overage. `usage_limit_annotation` records identify requests carrying wrap-up instructions, including replayed instructions. Request bodies and arbitrary response headers are not included in these records.
 
 Disable logging when finished:
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { mkdtempSync } from "node:fs"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, it } from "node:test"
@@ -658,6 +658,65 @@ async function lastContent(evt: Record<string, unknown>) {
 }
 
 describe("v2 usage-limit wrap-up", () => {
+  it("logs session-correlated quota evidence without secret response headers", async () => {
+    const logDir = await mkdtemp(join(tmpdir(), "claude-quota-log-"))
+    const logPath = join(logDir, "diagnostics.log")
+    const previous = process.env.CLAUDE_AUTH_DEBUG
+    process.env.CLAUDE_AUTH_DEBUG = logPath
+    try {
+      const { setupModule } = await loadV2(freshExpiry())
+      const bundle = makeCtx()
+      await withSetup(setupModule, bundle, async () => {
+        const evt = {
+          ...requestEvt(
+            messagesRequest({
+              model: "claude-opus-5-5",
+              messages: [{ role: "user", content: "hello" }],
+            }),
+          ),
+          kind: "primary",
+        }
+        await bundle.hooks.get("http.request")!(evt)
+        await bundle.hooks.get("http.response")!({
+          ...evt,
+          response: new Response("", {
+            headers: {
+              "anthropic-ratelimit-unified-status": "allowed",
+              "anthropic-ratelimit-unified-grace-5h-utilization": "0.12",
+              "anthropic-ratelimit-unified-overage-in-use": "false",
+              "request-id": "req_test",
+              "set-cookie": "secret-cookie",
+              authorization: "Bearer secret-token",
+            },
+          }),
+        })
+      })
+      const text = await readFile(logPath, "utf8")
+      const rows = text
+        .trim()
+        .split("\n")
+        .map((row) => JSON.parse(row))
+      const response = rows.find((row) => row.event === "usage_limit_response")
+      assert.equal(response.sessionID, "ses_test")
+      assert.equal(response.account, "cred_subscription")
+      assert.equal(response.pid, process.pid)
+      assert.equal(response.status, 200)
+      assert.deepEqual(response.headers, {
+        "anthropic-ratelimit-unified-status": "allowed",
+        "anthropic-ratelimit-unified-grace-5h-utilization": "0.12",
+        "anthropic-ratelimit-unified-overage-in-use": "false",
+        "request-id": "req_test",
+      })
+      assert.ok(
+        !text.includes("secret-cookie") && !text.includes("secret-token"),
+      )
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_AUTH_DEBUG
+      else process.env.CLAUDE_AUTH_DEBUG = previous
+      await rm(logDir, { recursive: true, force: true })
+    }
+  })
+
   it("publishes grace status and nudges the agent loop, not auxiliary requests", async () => {
     const { setupModule } = await loadV2(freshExpiry())
     const bundle = makeCtx()
@@ -744,6 +803,32 @@ describe("v2 usage-limit wrap-up", () => {
       assert.match(
         content.at(-1)?.text ?? "",
         /^\[Usage limit reached \u2014 grace window active\./,
+      )
+      await responseHook({
+        ...primary,
+        response: new Response(
+          '{"error":{"type":"rate_limit_error","message":"Usage limit reached"}}',
+          {
+            status: 429,
+            headers: {
+              "anthropic-ratelimit-unified-status": "rejected",
+              "anthropic-ratelimit-unified-representative-claim": "five_hour",
+              "anthropic-ratelimit-unified-5h-utilization": "1",
+              "anthropic-ratelimit-unified-5h-reset": String(resetsAt),
+            },
+          },
+        ),
+      })
+      const exhausted = { state: "exhausted", window: "five_hour", resetsAt }
+      assert.deepEqual(bundle.rpcEvents.at(-1), {
+        name: "changed",
+        data: exhausted,
+      })
+      assert.deepEqual(
+        await bundle.rpcHandlers.get(
+          "opencode-claude-auth.usage-limit.status",
+        )!(),
+        exhausted,
       )
     })
   })

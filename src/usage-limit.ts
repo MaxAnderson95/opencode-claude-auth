@@ -13,6 +13,11 @@ export type UsageLimitWindow = "five_hour" | "seven_day"
 export type UsageLimitStatus =
   | { readonly state: "ok" }
   | {
+      readonly state: "exhausted"
+      readonly window: UsageLimitWindow | null
+      readonly resetsAt: number | null
+    }
+  | {
       readonly state: "approaching"
       readonly utilization: number
       readonly resetsAt: number
@@ -56,6 +61,16 @@ const RESETS_AT = { type: "integer" } as const
 const STATUS_SCHEMA = {
   type: "object",
   oneOf: [
+    {
+      type: "object",
+      properties: {
+        state: { const: "exhausted" },
+        window: { enum: ["five_hour", "seven_day", null] },
+        resetsAt: { anyOf: [RESETS_AT, { type: "null" }] },
+      },
+      required: ["state", "window", "resetsAt"],
+      additionalProperties: false,
+    },
     {
       type: "object",
       properties: { state: { const: "ok" } },
@@ -234,6 +249,28 @@ function readStatus(headers: Headers, nowSeconds: number): UsageLimitStatus {
     overage === "allowed_warning" ||
     headers.get(`${HEADER}overage-in-use`) === "true"
 
+  if (headers.get(`${HEADER}status`) === "rejected" && !covered) {
+    const claim = headers.get(`${HEADER}representative-claim`)
+    const window = claim === "five_hour" || claim === "seven_day" ? claim : null
+    const reset = readReset(headers.get(`${HEADER}reset`), nowSeconds)
+    const windowReset =
+      window === "five_hour"
+        ? reset5h
+        : window === "seven_day"
+          ? reset7d
+          : undefined
+    if (
+      reset === "elapsed" ||
+      (reset === undefined && windowReset === "elapsed")
+    )
+      return OK
+    return {
+      state: "exhausted",
+      window,
+      resetsAt: reset ?? (typeof windowReset === "number" ? windowReset : null),
+    }
+  }
+
   if (grace5h > 0 || grace7d > 0) {
     // Same choice as Claude Code: the weekly window wins unless the 5-hour
     // window is also in grace and resets after it.
@@ -251,6 +288,15 @@ function readStatus(headers: Headers, nowSeconds: number): UsageLimitStatus {
   }
 
   const used5h = fraction(headers.get(`${HEADER}5h-utilization`))
+  const used7d = fraction(headers.get(`${HEADER}7d-utilization`))
+  if (!covered) {
+    if (resets7d !== undefined && used7d >= 1) {
+      return { state: "exhausted", window: "seven_day", resetsAt: resets7d }
+    }
+    if (resets5h !== undefined && used5h >= 1) {
+      return { state: "exhausted", window: "five_hour", resetsAt: resets5h }
+    }
+  }
   if (resets5h !== undefined && used5h >= NEAR_LIMIT_THRESHOLD && !covered) {
     return { state: "approaching", utilization: used5h, resetsAt: resets5h }
   }
