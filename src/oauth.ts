@@ -154,9 +154,13 @@ function requestToken(body: Record<string, string>): Promise<TokenResult> {
         })
       },
     )
-    request.setTimeout(30_000, () => {
+    // A socket inactivity timeout alone could outlive the refresh lock while
+    // a slow response keeps arriving. Bound the entire exchange instead.
+    const timeout = setTimeout(() => {
       request.destroy(new Error("Anthropic OAuth token request timed out"))
-    })
+    }, 30_000)
+    timeout.unref()
+    request.once("close", () => clearTimeout(timeout))
     request.on("error", (cause) => {
       reject(
         new Error(`Anthropic OAuth token request failed: ${cause.message}`),

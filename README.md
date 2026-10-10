@@ -75,6 +75,10 @@ The database contains the access token, refresh token, expiry, credential label,
 
 OpenCode invokes the plugin's refresh callback before an OAuth credential expires. Refresh happens directly over HTTPS using `node:https`; it does not run `curl`, call the Claude CLI, or write tokens to Claude Code storage.
 
+The callback coordinates refreshes across plugin instances and server processes using a lock file identified by a hash of the incoming refresh token. The lock contains only process and timestamp information. Before returning, the callback publishes the replacement tokens in OpenCode's plugin storage in the same database. Concurrent callers and callers holding an old credential snapshot reuse that result for up to 60 seconds, while keeping their own account metadata. A timer deletes expired results; if the process exits first, the next refresh removes them. All cooperating processes must use this plugin version and the same lock directory and database.
+
+The plugin bounds each token exchange to 30 seconds. An abandoned lock becomes available after 60 seconds. If the lock directory or shared storage is unavailable, the callback reports an error rather than exchanging a rotating token without coordination. Revoked credentials still require a new sign-in.
+
 ## Request behavior
 
 The plugin rewrites Anthropic requests only while the active Anthropic connection is an OAuth credential. An API-key credential or `ANTHROPIC_API_KEY` connection keeps OpenCode's native Anthropic request path.
@@ -117,16 +121,17 @@ The request transformer uses the beta set captured from the matching Claude Code
 
 The V2 entrypoint reads these environment variables:
 
-| Variable                            | Purpose                                                                                     | Default                                     |
-| ----------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `ANTHROPIC_CLI_VERSION`             | Claude Code version used in request identity headers.                                       | `config.ccVersion` in `src/model-config.ts` |
-| `ANTHROPIC_USER_AGENT`              | Complete user-agent override.                                                               | `claude-cli/{version} (external, sdk-cli)`  |
-| `ANTHROPIC_BETA_FLAGS`              | Comma-separated beta-header override.                                                       | `config.baseBetas` in `src/model-config.ts` |
-| `CLAUDE_AUTH_DEBUG`                 | Enables structured diagnostic logging. Use `1` for the default path or provide a file path. | Disabled                                    |
-| `OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS` | Maximum accepted delay from a 429 or 529 `retry-after` header during plugin retries.        | `30000`                                     |
-| `OPENCODE_CLAUDE_AUTH_TOOL_REPAIR`  | Orphaned tool-use strategy: `placeholder` or `drop`.                                        | `placeholder`                               |
+| Variable                                | Purpose                                                                                     | Default                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `ANTHROPIC_CLI_VERSION`                 | Claude Code version used in request identity headers.                                       | `config.ccVersion` in `src/model-config.ts` |
+| `ANTHROPIC_USER_AGENT`                  | Complete user-agent override.                                                               | `claude-cli/{version} (external, sdk-cli)`  |
+| `ANTHROPIC_BETA_FLAGS`                  | Comma-separated beta-header override.                                                       | `config.baseBetas` in `src/model-config.ts` |
+| `CLAUDE_AUTH_DEBUG`                     | Enables structured diagnostic logging. Use `1` for the default path or provide a file path. | Disabled                                    |
+| `OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS`     | Maximum accepted delay from a 429 or 529 `retry-after` header during plugin retries.        | `30000`                                     |
+| `OPENCODE_CLAUDE_AUTH_TOOL_REPAIR`      | Orphaned tool-use strategy: `placeholder` or `drop`.                                        | `placeholder`                               |
+| `OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR` | Shared directory for refresh lock files; all server processes must use the same path.       | `~/.local/share/opencode`                   |
 
-Legacy credential-source, refresh-lock, and Claude CLI environment variables belong to the V1 entrypoint and do not control V2 OAuth.
+Legacy credential-source, refresh-lock TTL, and Claude CLI environment variables belong to the V1 entrypoint and do not control V2 OAuth.
 
 ## Diagnostics
 

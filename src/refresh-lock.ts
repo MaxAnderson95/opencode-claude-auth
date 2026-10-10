@@ -8,13 +8,14 @@
  * others wait briefly and adopt the winner's freshly written token from the
  * shared credential store.
  *
- * "Best-effort" is deliberate: any filesystem error degrades to running the
- * refresh without a lock rather than blocking it. A crashed holder cannot
+ * By default, filesystem errors permit a best-effort refresh. Strict callers
+ * fail instead because rotating tokens require coordination. A crashed holder cannot
  * wedge the system either — the lock carries a TTL and a stale one is taken
  * over.
  */
 import {
   closeSync,
+  fstatSync,
   mkdirSync,
   openSync,
   statSync,
@@ -43,6 +44,8 @@ export interface AcquireOptions {
   /** Staleness threshold in ms. Defaults to {@link DEFAULT_LOCK_TTL_MS}. */
   ttlMs?: number
   now?: () => number
+  /** Rotating tokens cannot safely refresh without coordination. */
+  strict?: boolean
 }
 
 function defaultLockDir(): string {
@@ -92,8 +95,9 @@ export function acquireRefreshLock(
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
       if (code !== "EEXIST") {
-        // Unexpected FS failure — never let the lock block a refresh.
+        // Legacy callers permit best-effort refreshes on filesystem errors.
         log("refresh_lock_error", { source, error: String(code ?? err) })
+        if (opts.strict) throw err
         return NOOP_LOCK
       }
       // Someone holds it. Take over only if it is stale.
@@ -122,17 +126,25 @@ export function acquireRefreshLock(
       // The lock is held regardless of whether the payload wrote.
     }
     log("refresh_lock_acquired", { source })
+    const identity = fstatSync(fd)
+    let released = false
     return {
       release() {
+        if (released) return
+        released = true
         try {
-          closeSync(fd)
-        } catch {
-          // already closed
-        }
-        try {
-          unlinkSync(path)
+          const current = statSync(path)
+          if (current.dev === identity.dev && current.ino === identity.ino) {
+            unlinkSync(path)
+          }
         } catch {
           // already gone (e.g. a stale-takeover removed it)
+        } finally {
+          try {
+            closeSync(fd)
+          } catch {
+            // already closed
+          }
         }
       },
     }

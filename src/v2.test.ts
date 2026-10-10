@@ -23,6 +23,7 @@ interface ClaudeCredentials {
 const SOURCE_FILES = [
   "v2-setup.ts",
   "oauth.ts",
+  "oauth-refresh.ts",
   "index.ts",
   "betas.ts",
   "model-config.ts",

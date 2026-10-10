@@ -1,6 +1,12 @@
 import assert from "node:assert/strict"
 import { Server } from "node:http"
-import { test } from "node:test"
+import { test, type TestContext } from "node:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { spawn } from "node:child_process"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import type { Credential, Plugin } from "@opencode/plugin"
+import { createCredentialRefresher } from "./oauth-refresh.ts"
 import {
   OAUTH_AUTHORIZE_URL,
   OAUTH_CLIENT_ID,
@@ -258,4 +264,335 @@ test("refreshCredential preserves a non-rotated refresh token and metadata", asy
   assert.equal(credential.access, "new-access")
   assert.equal(credential.refresh, "old-refresh")
   assert.deepEqual(credential.metadata, { label: "Work" })
+})
+
+function refreshStorage(): Plugin.Context["storage"] {
+  const entries = new Map<
+    string,
+    Parameters<Plugin.Context["storage"]["set"]>[1]
+  >()
+  return {
+    get: async (key) => entries.get(key),
+    set: async (key, value) => {
+      entries.set(key, value)
+    },
+    remove: async (key) => {
+      entries.delete(key)
+    },
+    scan: async ({ prefix }) => ({
+      entries: [...entries]
+        .filter(([key]) => key.startsWith(prefix))
+        .map(([key, value]) => ({ key, value })),
+    }),
+  }
+}
+
+function refreshDirectory(t: TestContext) {
+  const dir = mkdtempSync(join(tmpdir(), "claude-oauth-refresh-"))
+  const previousDir = process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR
+  process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = dir
+  t.after(() => {
+    if (previousDir === undefined) {
+      delete process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR
+    } else {
+      process.env.OPENCODE_CLAUDE_AUTH_REFRESH_LOCK_DIR = previousDir
+    }
+    rmSync(dir, { recursive: true, force: true })
+  })
+  return dir
+}
+
+test("concurrent refreshes of a rotating token share one exchange", async (t) => {
+  refreshDirectory(t)
+  const credential = {
+    type: "oauth" as const,
+    methodID: OAUTH_METHOD_ID as never,
+    access: "concurrent-old-access",
+    refresh: "concurrent-old-refresh",
+    expires: 1,
+  }
+  let calls = 0
+  const fetcher: typeof fetch = async () => {
+    if (++calls > 1) {
+      return Response.json(
+        { error: "Refresh token not found or invalid" },
+        { status: 400 },
+      )
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    return Response.json({
+      access_token: "concurrent-new-access",
+      refresh_token: "concurrent-new-refresh",
+      expires_in: 3600,
+    })
+  }
+  const storage = refreshStorage()
+  const options = {
+    storage,
+    refresh: (value: typeof credential) => refreshCredential(value, fetcher),
+  }
+  // Separate plugin instances share the database, not closure state.
+  const foreground = createCredentialRefresher(options)
+  const background = createCredentialRefresher(options)
+  t.after(() => {
+    foreground.dispose()
+    background.dispose()
+  })
+  const results = await Promise.all([
+    foreground.refresh(credential),
+    background.refresh({ ...credential }),
+  ])
+  assert.equal(calls, 1)
+  assert.deepEqual(results[0], results[1])
+})
+
+test("a stale snapshot adopts the winning refresh without copying account metadata", async (t) => {
+  refreshDirectory(t)
+  let calls = 0
+  const storage = refreshStorage()
+  const refresher = createCredentialRefresher({
+    storage,
+    refresh: async (credential) => {
+      calls++
+      return {
+        ...credential,
+        access: "rotated-access",
+        refresh: "rotated-refresh",
+        expires: Date.now() + 3600_000,
+      }
+    },
+  })
+  t.after(() => refresher.dispose())
+  const credential: Credential.OAuth = {
+    type: "oauth",
+    methodID: OAUTH_METHOD_ID as never,
+    access: "stale-access",
+    refresh: "stale-refresh",
+    expires: 1,
+    metadata: { label: "Work" },
+  }
+  await refresher.refresh(credential)
+  const value = await refresher.refresh({
+    ...credential,
+    metadata: { label: "Another label" },
+  })
+  assert.equal(calls, 1)
+  assert.equal(value.refresh, "rotated-refresh")
+  assert.deepEqual(value.metadata, { label: "Another label" })
+  const entries = await storage.scan({ prefix: "oauth-refresh/" })
+  assert.equal(entries.entries.length, 1)
+  assert.ok(!entries.entries[0].key.includes(credential.refresh))
+  assert.ok(!JSON.stringify(entries).includes("Work"))
+})
+
+test("failed exchanges release the lock and do not cache an invalid token", async (t) => {
+  refreshDirectory(t)
+  const storage = refreshStorage()
+  let fail = true
+  const refresher = createCredentialRefresher({
+    storage,
+    refresh: async (credential) => {
+      if (fail) throw new Error("Refresh token not found or invalid")
+      return { ...credential, expires: Date.now() + 3600_000 }
+    },
+  })
+  t.after(() => refresher.dispose())
+  const credential: Credential.OAuth = {
+    type: "oauth",
+    methodID: OAUTH_METHOD_ID as never,
+    access: "failed-access",
+    refresh: "failed-refresh",
+    expires: 1,
+  }
+  await assert.rejects(refresher.refresh(credential), /not found or invalid/)
+  assert.deepEqual(await storage.scan({ prefix: "oauth-refresh/" }), {
+    entries: [],
+  })
+  fail = false
+  assert.ok((await refresher.refresh(credential)).expires > Date.now())
+})
+
+test("expired shared results are removed instead of overwriting a newer refresh", async (t) => {
+  refreshDirectory(t)
+  const storage = refreshStorage()
+  const refresher = createCredentialRefresher({
+    storage,
+    refresh: async (credential) => ({
+      ...credential,
+      access: "newer-access",
+      refresh: "newer-refresh",
+      expires: Date.now() + 3600_000,
+    }),
+  })
+  t.after(() => refresher.dispose())
+  const credential: Credential.OAuth = {
+    type: "oauth",
+    methodID: OAUTH_METHOD_ID as never,
+    access: "old-access",
+    refresh: "old-refresh",
+    expires: 1,
+  }
+  await refresher.refresh(credential)
+  const { entries } = await storage.scan({ prefix: "oauth-refresh/" })
+  const key = entries[0].key
+  await storage.set(key, {
+    access: "expired-result",
+    refresh: "spent-refresh",
+    expires: Date.now() + 3600_000,
+    validUntil: 1,
+  })
+  assert.equal((await refresher.refresh(credential)).access, "newer-access")
+  await storage.set("oauth-refresh/obsolete", {
+    access: "expired-access",
+    refresh: "expired-refresh",
+    expires: 1,
+    validUntil: 1,
+  })
+  await refresher.refresh(credential)
+  assert.equal(await storage.get("oauth-refresh/obsolete"), undefined)
+})
+
+test("shared token results are deleted after their handoff window", async (t) => {
+  refreshDirectory(t)
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() })
+  const storage = refreshStorage()
+  const refresher = createCredentialRefresher({
+    storage,
+    refresh: async (credential) => ({
+      ...credential,
+      expires: Date.now() + 3600_000,
+    }),
+  })
+  t.after(() => refresher.dispose())
+  await refresher.refresh({
+    type: "oauth",
+    methodID: OAUTH_METHOD_ID as never,
+    access: "handoff-access",
+    refresh: "handoff-refresh",
+    expires: 1,
+  })
+  assert.equal(
+    (await storage.scan({ prefix: "oauth-refresh/" })).entries.length,
+    1,
+  )
+  t.mock.timers.tick(60_002)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(await storage.scan({ prefix: "oauth-refresh/" }), {
+    entries: [],
+  })
+})
+
+test("separate server processes share one rotating-token exchange", async (t) => {
+  refreshDirectory(t)
+  const storage = refreshStorage()
+  let exchanges = 0
+  const worker = `
+    import { createCredentialRefresher } from ${JSON.stringify(new URL("./oauth-refresh.ts", import.meta.url).href)}
+    import { refreshCredential, OAUTH_METHOD_ID } from ${JSON.stringify(new URL("./oauth.ts", import.meta.url).href)}
+    let seq = 0
+    const pending = new Map()
+    process.on('message', ({ id, value }) => {
+      pending.get(id)(value)
+      pending.delete(id)
+    })
+    const rpc = (op, params = {}) => new Promise(resolve => {
+      const id = ++seq
+      pending.set(id, resolve)
+      process.send({ id, op, ...params })
+    })
+    const storage = {
+      get: key => rpc('get', { key }),
+      set: (key, value) => rpc('set', { key, value }),
+      remove: key => rpc('remove', { key }),
+      scan: options => rpc('scan', { options }),
+    }
+    const refresher = createCredentialRefresher({
+      storage,
+      refresh: credential => refreshCredential(credential, async () => {
+        const response = await rpc('exchange')
+        return Response.json(response.body, { status: response.status })
+      }),
+    })
+    try {
+      const result = await refresher.refresh({
+        type: 'oauth', methodID: OAUTH_METHOD_ID, access: 'process-old-access',
+        refresh: 'process-old-refresh', expires: 1,
+      })
+      if (result.refresh !== 'process-new-refresh') throw new Error('Wrong result')
+    } catch (error) {
+      console.error(error.message)
+      process.exitCode = 1
+    } finally {
+      refresher.dispose()
+      process.disconnect()
+    }
+  `
+  await Promise.all(
+    [1, 2].map(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          const child = spawn(
+            process.execPath,
+            ["--experimental-strip-types", "--input-type=module", "-e", worker],
+            { stdio: ["ignore", "ignore", "pipe", "ipc"] },
+          )
+          t.after(() => {
+            if (child.exitCode === null) child.kill()
+          })
+          let stderr = ""
+          child.stderr!.on("data", (chunk) => (stderr += String(chunk)))
+          child.once("error", reject)
+          child.once("exit", (code) => {
+            if (code === 0) resolve()
+            else reject(new Error(`Refresh worker failed (${code}): ${stderr}`))
+          })
+          child.on("message", async (message) => {
+            const input = message as {
+              id: number
+              op: string
+              key: string
+              value: Parameters<typeof storage.set>[1]
+              options: Parameters<typeof storage.scan>[0]
+            }
+            let value: unknown
+            switch (input.op) {
+              case "get":
+                value = await storage.get(input.key)
+                break
+              case "set":
+                value = await storage.set(input.key, input.value)
+                break
+              case "remove":
+                value = await storage.remove(input.key)
+                break
+              case "scan":
+                value = await storage.scan(input.options)
+                break
+              case "exchange":
+                value =
+                  ++exchanges === 1
+                    ? {
+                        status: 200,
+                        body: {
+                          access_token: "process-new-access",
+                          refresh_token: "process-new-refresh",
+                          expires_in: 3600,
+                        },
+                      }
+                    : {
+                        status: 400,
+                        body: { error: "Refresh token not found or invalid" },
+                      }
+                await new Promise<void>((done) => setTimeout(done, 100))
+                break
+              default:
+                reject(new Error(`Unexpected worker operation: ${input.op}`))
+                return
+            }
+            child.send({ id: input.id, value })
+          })
+        }),
+    ),
+  )
+  assert.equal(exchanges, 1)
 })

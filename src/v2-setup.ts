@@ -17,6 +17,7 @@ import {
   transformResponseStream,
 } from "./transforms.ts"
 import { authorize, OAUTH_METHOD_ID, refreshCredential } from "./oauth.ts"
+import { createCredentialRefresher } from "./oauth-refresh.ts"
 import { createUsageLimitTracker, UsageLimitRpc } from "./usage-limit.ts"
 
 export const INTEGRATION_ID = "anthropic"
@@ -117,6 +118,11 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   await evaluateOwnership()
 
   const registrations: Array<{ dispose: () => Promise<void> }> = []
+  const refresher = createCredentialRefresher({
+    storage: ctx.storage,
+    refresh: refreshCredential,
+  })
+  registrations.push({ dispose: async () => refresher.dispose() })
 
   const activeAccount = async () =>
     accountID(await ctx.integration.connection.active(INTEGRATION_ID))
@@ -174,7 +180,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
           ],
         },
         authorize,
-        refresh: refreshCredential,
+        refresh: refresher.refresh,
         label: () => "Claude subscription",
       })
     }),

@@ -51,6 +51,12 @@ describe("refresh-lock", () => {
       now: () => future,
     })
     assert.ok(takeover, "a stale lock is taken over")
+    held!.release()
+    assert.equal(
+      acquireRefreshLock(SRC, { dir, ttlMs: 20_000 }),
+      null,
+      "the old holder must not remove its replacement's lock",
+    )
     takeover!.release()
   })
 
@@ -98,5 +104,13 @@ describe("refresh-lock", () => {
     assert.ok(lock, "an unusable lock dir degrades to a granted no-op lock")
     lock!.release()
     assert.ok(!existsSync(join(filePath, "sub")))
+  })
+
+  it("fails closed when rotating-token coordination cannot acquire a lock", () => {
+    const filePath = join(dir, "not-a-dir")
+    writeFileSync(filePath, "x")
+    assert.throws(() =>
+      acquireRefreshLock(SRC, { dir: join(filePath, "sub"), strict: true }),
+    )
   })
 })
