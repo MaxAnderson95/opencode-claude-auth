@@ -24,6 +24,8 @@ const SOURCE_FILES = [
   "v2-setup.ts",
   "oauth.ts",
   "oauth-refresh.ts",
+  "relogin.ts",
+  "relogin-rpc.ts",
   "index.ts",
   "betas.ts",
   "model-config.ts",
@@ -564,6 +566,11 @@ describe("v2 integration method", () => {
       )
       assert.equal(typeof registered.refresh, "function")
       assert.equal(registered.label?.({}), "Claude subscription")
+      for (const method of ["begin", "complete", "commit", "cancel"]) {
+        assert.ok(
+          bundle.rpcHandlers.has(`opencode-claude-auth.relogin.${method}`),
+        )
+      }
     })
   })
 })

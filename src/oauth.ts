@@ -248,7 +248,9 @@ function authorizeManually(): IntegrationOAuthAuthorization {
 
 export async function authorize(
   answer: Parameters<IntegrationOAuthMethodRegistration["authorize"]>[0] = {},
+  signal?: AbortSignal,
 ): Promise<IntegrationOAuthAuthorization> {
+  signal?.throwIfAborted()
   // Browser opening belongs to the OpenCode client, which does not report
   // failures to this server plugin. Server environment is only a heuristic.
   const headless =
@@ -281,9 +283,18 @@ export async function authorize(
       `http://localhost:${address.port}/callback`,
     )
     const callback = new Promise<Credential.OAuth>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timeout)
+        signal?.removeEventListener("abort", abort)
+        server.close()
+      }
+      const abort = () => {
+        cleanup()
+        reject(signal?.reason ?? new Error("Anthropic OAuth login cancelled"))
+      }
       const timeout = setTimeout(
         () => {
-          server.close()
+          cleanup()
           reject(
             new Error("Anthropic OAuth callback timed out after 5 minutes"),
           )
@@ -291,6 +302,8 @@ export async function authorize(
         5 * 60 * 1000,
       )
       timeout.unref()
+      signal?.addEventListener("abort", abort, { once: true })
+      if (signal?.aborted) return abort()
 
       server.on("request", async (incoming, response) => {
         const url = new URL(
@@ -312,12 +325,11 @@ export async function authorize(
           response
             .writeHead(400, { "Content-Type": "text/html" })
             .end(`<h2>Authorization failed</h2><p>${message}</p>`)
-          clearTimeout(timeout)
-          server.close()
+          cleanup()
           reject(new Error(message))
           return
         }
-        clearTimeout(timeout)
+        cleanup()
         try {
           const credential = await exchangeAuthorizationCode(code, request)
           response
@@ -348,6 +360,7 @@ export async function authorize(
       callback,
     }
   } catch {
+    signal?.throwIfAborted()
     return authorizeManually()
   }
 }

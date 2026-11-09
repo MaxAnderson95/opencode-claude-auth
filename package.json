@@ -77,19 +77,19 @@
   },
   "devDependencies": {
     "@opencode-ai/plugin": "0.0.0-next-17403",
-    "@opencode/plugin": "2.0.4",
-    "@opentui/core": "0.5.12",
-    "@opentui/solid": "0.5.12",
+    "@opencode/plugin": "2.2.6",
+    "@opentui/core": "0.8.1",
+    "@opentui/solid": "0.8.1",
     "@types/node": "^25.5.0",
     "oxfmt": "0.41.0",
     "oxlint": "1.56.0",
-    "solid-js": "1.9.15",
+    "solid-js": "1.9.16",
     "typescript": "^5.0.0"
   },
   "peerDependencies": {
-    "@opencode/plugin": "2.0.4",
-    "@opentui/core": "*",
-    "@opentui/solid": "*",
+    "@opencode/plugin": "2.2.6",
+    "@opentui/core": ">=0.8.1",
+    "@opentui/solid": ">=0.8.1",
     "solid-js": "*"
   },
   "packageManager": "pnpm@10.32.1"

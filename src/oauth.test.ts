@@ -7,6 +7,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Credential, Plugin } from "@opencode/plugin"
 import { createCredentialRefresher } from "./oauth-refresh.ts"
+import { createRelogin } from "./relogin.ts"
+import { credentialFingerprint } from "./relogin-rpc.ts"
 import {
   OAUTH_AUTHORIZE_URL,
   OAUTH_CLIENT_ID,
@@ -204,6 +206,228 @@ test("createAuthorizationRequest builds a PKCE authorization URL", () => {
   assert.equal(url.searchParams.get("state"), request.state)
   assert.ok(url.searchParams.get("code_challenge"))
   assert.ok(request.verifier)
+})
+
+test("cancelling local authorization closes its listener and rejects its callback", async () => {
+  const controller = new AbortController()
+  const authorization = await authorize(
+    { loginMode: "local" },
+    controller.signal,
+  )
+  assert.equal(authorization.mode, "auto")
+  if (authorization.mode !== "auto") return
+  const rejected = assert.rejects(authorization.callback, /cancelled/)
+  controller.abort(new Error("test login cancelled"))
+  await rejected
+  const redirect = new URL(authorization.url).searchParams.get("redirect_uri")!
+  await assert.rejects(fetch(redirect))
+})
+
+function reloginFixture(t: TestContext, automatic = false) {
+  const original = {
+    type: "oauth" as const,
+    methodID: OAUTH_METHOD_ID as Credential.OAuth["methodID"],
+    access: "expired-access",
+    refresh: "expired-refresh",
+    expires: 0,
+    metadata: { accountID: "original-account", custom: "keep" },
+  }
+  const replacement = {
+    ...original,
+    access: "new-access",
+    refresh: "new-refresh",
+    expires: Date.now() + 3_600_000,
+    metadata: { custom: "do-not-copy" },
+  }
+  const account = {
+    id: "cred_named",
+    label: "Max 20x",
+    active: false,
+    value: { ...original },
+  }
+  let exists = true
+  let exchanges = 0
+  let resolutions = 0
+  let loginSignal: AbortSignal | undefined
+  const { promise: callback, resolve: finish } =
+    Promise.withResolvers<Credential.OAuth>()
+  const relogin = createRelogin({
+    integration: {
+      get: async () =>
+        ({
+          data: {
+            connections: exists
+              ? [
+                  {
+                    type: "credential",
+                    id: account.id,
+                    label: account.label,
+                    method: "oauth",
+                  },
+                ]
+              : [],
+          },
+        }) as never,
+      connection: {
+        active: async () => undefined,
+        status: async () => {},
+        resolve: async () => {
+          resolutions++
+          if (!exists) return undefined
+          if (account.value.expires <= Date.now() + 300_000) {
+            const value = relogin.replacement(account.value)
+            if (value) account.value = value as typeof original
+          }
+          return account.value
+        },
+      },
+    },
+    authorize: async (_answer, signal) => {
+      loginSignal = signal
+      return automatic
+        ? {
+            mode: "auto",
+            url: "https://claude.ai/oauth/authorize",
+            instructions: "Sign in",
+            callback,
+          }
+        : {
+            mode: "code",
+            url: "https://claude.ai/oauth/authorize",
+            instructions: "Paste code",
+            callback: async (code) => {
+              exchanges++
+              if (code !== "valid#state") throw new Error("Invalid OAuth state")
+              return replacement
+            },
+          }
+    },
+  })
+  t.after(() => relogin.dispose())
+  return {
+    relogin,
+    account,
+    original,
+    replacement,
+    finish,
+    input: {
+      credentialID: account.id,
+      fingerprint: credentialFingerprint(original),
+      expires: 0,
+      loginMode: "manual" as const,
+    },
+    exchanges: () => exchanges,
+    resolutions: () => resolutions,
+    signal: () => loginSignal,
+    removeAccount: () => {
+      exists = false
+    },
+  }
+}
+
+test("re-login saves new tokens through resolution without replacing account identity", async (t) => {
+  const fixture = reloginFixture(t)
+  const { relogin, account, original } = fixture
+  const attempt = await relogin.begin(fixture.input)
+  await relogin.complete(attempt.id, "valid#state")
+  assert.deepEqual(
+    account.value,
+    original,
+    "authorization alone must not change credentials",
+  )
+  assert.equal(
+    relogin.replacement(original),
+    undefined,
+    "only committing makes replacements available",
+  )
+  await relogin.commit(attempt.id)
+  assert.equal(account.id, "cred_named")
+  assert.equal(account.label, "Max 20x")
+  assert.equal(account.active, false)
+  assert.equal(account.value.access, "new-access")
+  assert.equal(account.value.refresh, "new-refresh")
+  assert.deepEqual(account.value.metadata, original.metadata)
+  assert.equal(fixture.resolutions(), 1)
+  assert.equal(relogin.replacement(original), undefined)
+})
+
+test("re-login supports a completed browser callback and an account renamed during login", async (t) => {
+  const fixture = reloginFixture(t, true)
+  const attempt = await fixture.relogin.begin(fixture.input)
+  fixture.finish(fixture.replacement)
+  await fixture.relogin.complete(attempt.id)
+  fixture.account.label = "Renamed account"
+  await fixture.relogin.commit(attempt.id)
+  assert.equal(fixture.account.label, "Renamed account")
+  assert.equal(fixture.account.value.access, "new-access")
+})
+
+test("cancelled or failed re-logins leave the existing account untouched", async (t) => {
+  const fixture = reloginFixture(t)
+  const attempt = await fixture.relogin.begin(fixture.input)
+  await assert.rejects(
+    fixture.relogin.complete(attempt.id, "bad#state"),
+    /Invalid OAuth state/,
+  )
+  fixture.relogin.cancel(attempt.id)
+  assert.equal(fixture.signal()?.aborted, true)
+  await assert.rejects(fixture.relogin.commit(attempt.id), /expired/)
+  assert.deepEqual(fixture.account.value, fixture.original)
+  assert.equal(fixture.resolutions(), 0)
+})
+
+test("re-login does not overwrite credentials refreshed while the browser was open", async (t) => {
+  const fixture = reloginFixture(t)
+  const attempt = await fixture.relogin.begin(fixture.input)
+  await fixture.relogin.complete(attempt.id, "valid#state")
+  fixture.account.value = { ...fixture.original, refresh: "another-refresh" }
+  await assert.rejects(fixture.relogin.commit(attempt.id), /account changed/)
+  assert.equal(fixture.account.value.access, "expired-access")
+  assert.equal(fixture.account.value.refresh, "another-refresh")
+})
+
+test("re-login rejects an unexpired or removed account and duplicate attempts", async (t) => {
+  const fixture = reloginFixture(t)
+  await assert.rejects(
+    fixture.relogin.begin({
+      ...fixture.input,
+      expires: Date.now() + 3_600_000,
+    }),
+    /still valid/,
+  )
+  const attempt = await fixture.relogin.begin(fixture.input)
+  await assert.rejects(
+    fixture.relogin.begin(fixture.input),
+    /already in progress/,
+  )
+  await fixture.relogin.complete(attempt.id, "valid#state")
+  fixture.removeAccount()
+  await assert.rejects(fixture.relogin.commit(attempt.id), /no longer exists/)
+  assert.equal(fixture.resolutions(), 0)
+  assert.deepEqual(fixture.account.value, fixture.original)
+})
+
+test("concurrent completion exchanges a pasted authorization code only once", async (t) => {
+  const fixture = reloginFixture(t)
+  const attempt = await fixture.relogin.begin(fixture.input)
+  await Promise.all([
+    fixture.relogin.complete(attempt.id, "valid#state"),
+    fixture.relogin.complete(attempt.id, "valid#state"),
+  ])
+  assert.equal(fixture.exchanges(), 1)
+})
+
+test("abandoned re-logins expire and close authorization resources", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const fixture = reloginFixture(t)
+  const attempt = await fixture.relogin.begin(fixture.input)
+  t.mock.timers.tick(5 * 60_000)
+  assert.equal(fixture.signal()?.aborted, true)
+  await assert.rejects(
+    fixture.relogin.complete(attempt.id, "valid#state"),
+    /expired/,
+  )
+  assert.deepEqual(fixture.account.value, fixture.original)
 })
 
 test("exchangeAuthorizationCode returns a native OpenCode credential", async () => {

@@ -19,6 +19,8 @@ import {
 import { authorize, OAUTH_METHOD_ID, refreshCredential } from "./oauth.ts"
 import { createCredentialRefresher } from "./oauth-refresh.ts"
 import { createUsageLimitTracker, UsageLimitRpc } from "./usage-limit.ts"
+import { createRelogin } from "./relogin.ts"
+import { LOGIN_OPTIONS, ReloginRpc, type ReloginInput } from "./relogin-rpc.ts"
 
 export const INTEGRATION_ID = "anthropic"
 export const METHOD_ID = OAUTH_METHOD_ID
@@ -34,6 +36,10 @@ type ActiveConnection = Awaited<
 
 function accountID(connection: ActiveConnection): string {
   return connection?.type === "credential" ? connection.id : "oauth"
+}
+
+function reloginFailure(error: unknown): string {
+  return error instanceof Error ? error.message : "Claude re-login failed."
 }
 
 type SystemEntry = { type?: string; text?: string } & Record<string, unknown>
@@ -118,11 +124,47 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   await evaluateOwnership()
 
   const registrations: Array<{ dispose: () => Promise<void> }> = []
+  const relogin = createRelogin({ integration: ctx.integration })
+  registrations.push({ dispose: async () => relogin.dispose() })
   const refresher = createCredentialRefresher({
     storage: ctx.storage,
-    refresh: refreshCredential,
+    refresh: async (credential) =>
+      relogin.replacement(credential) ?? refreshCredential(credential),
   })
   registrations.push({ dispose: async () => refresher.dispose() })
+
+  registrations.push(
+    await ctx.rpc.register(ReloginRpc, {
+      begin: async (input, call) => {
+        try {
+          return await relogin.begin(input as ReloginInput)
+        } catch (error) {
+          return call.error("failed", reloginFailure(error), {})
+        }
+      },
+      complete: async (input, call) => {
+        const { id, code } = input as { id: string; code?: string }
+        try {
+          await relogin.complete(id, code)
+          return {}
+        } catch (error) {
+          return call.error("failed", reloginFailure(error), {})
+        }
+      },
+      commit: async (input, call) => {
+        try {
+          await relogin.commit((input as { id: string }).id)
+          return {}
+        } catch (error) {
+          return call.error("failed", reloginFailure(error), {})
+        }
+      },
+      cancel: async (input) => {
+        relogin.cancel((input as { id: string }).id)
+        return {}
+      },
+    }),
+  )
 
   const activeAccount = async () =>
     accountID(await ctx.integration.connection.active(INTEGRATION_ID))
@@ -158,24 +200,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
               type: "string",
               title: "Authorization method",
               default: "auto",
-              options: [
-                {
-                  value: "auto",
-                  label: "Automatic",
-                  description:
-                    "Use paste-code login on SSH or headless Linux hosts",
-                },
-                {
-                  value: "manual",
-                  label: "Paste code",
-                  description: "Authorize in a browser on another machine",
-                },
-                {
-                  value: "local",
-                  label: "Local callback",
-                  description: "Browser can reach this server's localhost",
-                },
-              ],
+              options: [...LOGIN_OPTIONS],
             },
           ],
         },

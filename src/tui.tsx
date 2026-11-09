@@ -2,10 +2,30 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal, Show } from "solid-js"
 import { UsageLimitRpc, type UsageLimitStatus } from "./usage-limit.ts"
+import { createReloginCommand } from "./relogin-tui.ts"
 
 export default Plugin.define({
   id: "opencode-claude-auth",
   setup(context) {
+    const relogin = createReloginCommand(context)
+    context.ui.slot({
+      append: "app",
+      render() {
+        context.keymap.layer(() => ({
+          commands: [
+            {
+              id: "opencode-claude-auth.relogin",
+              title: "Re-login to an existing Claude account",
+              group: "Claude",
+              palette: true,
+              slash: { name: "claude-login" },
+              run: () => relogin.run(),
+            },
+          ],
+        }))
+        return null
+      },
+    })
     const usage = context.client.rpc(UsageLimitRpc)
     const [status, setStatus] = createSignal<UsageLimitStatus>({ state: "ok" })
     const [now, setNow] = createSignal(Date.now())
@@ -79,6 +99,7 @@ export default Plugin.define({
     })
 
     return () => {
+      relogin.dispose()
       unsubscribe()
       clearInterval(clock)
     }

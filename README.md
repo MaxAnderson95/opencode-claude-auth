@@ -57,6 +57,14 @@ Detection uses the server's environment. OpenCode opens the browser in its clien
 
 To connect another subscription, repeat `/connect`. OpenCode stores each account as a separate native Anthropic credential. Account activation, labels, and removal are handled by OpenCode rather than by a plugin-specific switcher or file.
 
+### Re-login without adding an account
+
+Run `/claude-login` in the TUI, select an existing named Claude subscription account, and choose `Automatic`, `Paste code`, or `Local callback`. Complete authorization for the same Claude account in the browser, then confirm the update. The command keeps the existing OpenCode credential ID, custom name, metadata, and active/inactive selection. It does not add an account or call the native `/connect` flow.
+
+This command requires OpenCode 2.2.6 or later and an expired access token. Accounts with unexpired access tokens are disabled in the picker: OpenCode only saves replacement tokens when it invokes the refresh callback. The plugin completes browser authorization first, then returns the replacement tokens through that callback so OpenCode owns persistence and credential locking.
+
+The plugin cannot automatically verify which Claude identity an expired legacy credential belonged to. Check the browser account before confirming the update. Cancelling before saving leaves the existing credential untouched. If the account is removed or its tokens change during authorization, the command refuses to apply the replacement. Login attempts expire after five minutes, and cancellation closes local callback listeners.
+
 ## Credential storage and refresh
 
 The plugin exchanges authorization codes and refresh tokens at:
@@ -187,15 +195,15 @@ Use `pnpm run deploy:live` for the final verified deployment rather than copying
 
 ## Troubleshooting
 
-| Symptom                                                  | Action                                                                                                                                                    |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Claude Pro/Max subscription` is missing from `/connect` | Confirm OpenCode loads the `current` plugin directory, deploy again from the source checkout, then restart the service once.                              |
-| Browser authorization does not complete                  | Confirm the browser can reach the localhost callback and retry `/connect`.                                                                                |
-| `Claude subscription credentials are unavailable`        | Connect or activate an Anthropic subscription credential through `/connect`.                                                                              |
-| OAuth refresh fails                                      | Reconnect that account. Do not run Claude Code; it is not the credential source.                                                                          |
-| A quota reset returns 429                                | Wait for the subscription limit to reset or activate another connected account. Long `retry-after` values surface instead of blocking OpenCode for hours. |
-| Source changes do not appear                             | Run `pnpm run deploy:live`, wait for activation to finish, then run `opencode2 service restart`.                                                          |
-| OpenCode sessions freeze during plugin work              | Stop editing or building in the live plugin directory. Work only in `~/Projects_personal/opencode-claude-auth` and deploy atomically.                     |
+| Symptom                                                  | Action                                                                                                                                                        |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Claude Pro/Max subscription` is missing from `/connect` | Confirm OpenCode loads the `current` plugin directory, deploy again from the source checkout, then restart the service once.                                  |
+| Browser authorization does not complete                  | Confirm the browser can reach the localhost callback and retry `/connect`.                                                                                    |
+| `Claude subscription credentials are unavailable`        | Connect or activate an Anthropic subscription credential through `/connect`.                                                                                  |
+| OAuth refresh fails                                      | Run `/claude-login` to re-authenticate the existing expired account without changing its ID or name. Do not run Claude Code; it is not the credential source. |
+| A quota reset returns 429                                | Wait for the subscription limit to reset or activate another connected account. Long `retry-after` values surface instead of blocking OpenCode for hours.     |
+| Source changes do not appear                             | Run `pnpm run deploy:live`, wait for activation to finish, then run `opencode2 service restart`.                                                              |
+| OpenCode sessions freeze during plugin work              | Stop editing or building in the live plugin directory. Work only in `~/Projects_personal/opencode-claude-auth` and deploy atomically.                         |
 
 ## Development workflow
 
