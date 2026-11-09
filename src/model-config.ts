@@ -15,19 +15,18 @@ export interface ModelConfig {
 }
 
 export const config: ModelConfig = {
-  ccVersion: "2.1.280",
-  ccVersionSuffix: "1a0",
+  ccVersion: "2.1.321",
+  ccVersionSuffix: "cf7",
   baseBetas: [
     "claude-code-20250219",
     "oauth-2025-04-20",
     "interleaved-thinking-2025-05-14",
-    "thinking-token-count-2026-05-13",
     "context-management-2025-06-27",
-    "prompt-caching-scope-2026-01-05",
-    "mid-conversation-system-2026-04-07",
     "advisor-tool-2026-03-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
     "effort-2025-11-24",
-    "fallback-credit-2026-06-01",
+    "thinking-display-updates-2026-08-18",
     "extended-cache-ttl-2025-04-11",
   ],
   longContextBetas: [
@@ -35,8 +34,42 @@ export const config: ModelConfig = {
     "interleaved-thinking-2025-05-14",
   ],
   modelOverrides: {
+    "fable-5": {
+      add: [
+        "per-turn-control-2026-07-01",
+        "mid-conversation-tool-changes-2026-07-01",
+        "inline-tools-2026-09-15",
+        "fallback-credit-2026-06-01",
+      ],
+      maxTokens: 128_000,
+      adaptiveThinking: true,
+    },
+    "opus-5-5": {
+      add: [
+        "per-turn-control-2026-07-01",
+        "mid-conversation-tool-changes-2026-07-01",
+        "inline-tools-2026-09-15",
+        "fallback-credit-2026-06-01",
+      ],
+      maxTokens: 128_000,
+      adaptiveThinking: true,
+    },
     "opus-5": {
+      add: [
+        "mid-conversation-tool-changes-2026-07-01",
+        "inline-tools-2026-09-15",
+        "fallback-credit-2026-06-01",
+      ],
       maxTokens: 64_000,
+      adaptiveThinking: true,
+    },
+    "haiku-5": {
+      add: [
+        "per-turn-control-2026-07-01",
+        "mid-conversation-tool-changes-2026-07-01",
+        "inline-tools-2026-09-15",
+      ],
+      maxTokens: 128_000,
       adaptiveThinking: true,
     },
     "sonnet-4-5": {

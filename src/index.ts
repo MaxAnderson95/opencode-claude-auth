@@ -67,7 +67,7 @@ function getCliVersion(): string {
 function getUserAgent(): string {
   return (
     process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${getCliVersion()} (external, sdk-cli)`
+    `claude-cli/${getCliVersion()} (external, cli)`
   )
 }
 
@@ -77,7 +77,7 @@ function getStainlessHeaders(): Record<string, string> {
     "x-stainless-lang": "js",
     "x-stainless-os":
       process.platform === "darwin" ? "MacOS" : process.platform,
-    "x-stainless-package-version": "0.112.1",
+    "x-stainless-package-version": "0.128.0",
     "x-stainless-retry-count": "0",
     "x-stainless-runtime": "node",
     "x-stainless-runtime-version": process.version,

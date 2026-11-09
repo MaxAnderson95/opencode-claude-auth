@@ -132,7 +132,7 @@ The V2 entrypoint reads these environment variables:
 | Variable                                | Purpose                                                                                     | Default                                     |
 | --------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | `ANTHROPIC_CLI_VERSION`                 | Claude Code version used in request identity headers.                                       | `config.ccVersion` in `src/model-config.ts` |
-| `ANTHROPIC_USER_AGENT`                  | Complete user-agent override.                                                               | `claude-cli/{version} (external, sdk-cli)`  |
+| `ANTHROPIC_USER_AGENT`                  | Complete user-agent override.                                                               | `claude-cli/{version} (external, cli)`      |
 | `ANTHROPIC_BETA_FLAGS`                  | Comma-separated beta-header override.                                                       | `config.baseBetas` in `src/model-config.ts` |
 | `CLAUDE_AUTH_DEBUG`                     | Enables structured diagnostic logging. Use `1` for the default path or provide a file path. | Disabled                                    |
 | `OPENCODE_CLAUDE_AUTH_MAX_RETRY_MS`     | Maximum accepted delay from a 429 or 529 `retry-after` header during plugin retries.        | `30000`                                     |

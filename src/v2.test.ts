@@ -361,8 +361,9 @@ describe("v2 http.request hook", () => {
       assert.ok(!betas.includes("fine-grained-tool-streaming-2025-05-14"))
       assert.ok(betas.includes("claude-code-20250219"))
       assert.ok(betas.includes("oauth-2025-04-20"))
-      assert.ok(betas.includes("fallback-credit-2026-06-01"))
-      assert.ok(betas.includes("mid-conversation-system-2026-04-07"))
+      assert.ok(betas.includes("advanced-tool-use-2025-11-20"))
+      assert.ok(betas.includes("thinking-display-updates-2026-08-18"))
+      assert.ok(!betas.includes("mid-conversation-system-2026-04-07"))
 
       const body = JSON.parse(await request.text()) as {
         system: Array<{ type: string; text: string }>

@@ -384,7 +384,7 @@ export function transformBody(
     const version = process.env.ANTHROPIC_CLI_VERSION ?? config.ccVersion
     const versionSuffix =
       process.env.ANTHROPIC_CLI_VERSION_SUFFIX ?? config.ccVersionSuffix
-    const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? "sdk-cli"
+    const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? "cli"
     const billingHeader = buildBillingHeaderValue(
       version,
       versionSuffix,
@@ -485,10 +485,14 @@ export function transformBody(
       parsed.max_tokens = override.maxTokens
     }
     if (override?.adaptiveThinking) {
-      parsed.thinking ??= { type: "adaptive", display: "omitted" }
+      parsed.thinking ??= { type: "adaptive", display: "updates" }
       parsed.output_config ??= { effort: "medium" }
-      parsed.context_management ??= {
-        edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+      // The API rejects clear_thinking when thinking is disabled, which
+      // OpenCode does for title generation.
+      if (parsed.thinking.type !== "disabled") {
+        parsed.context_management ??= {
+          edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+        }
       }
     }
     if (override?.disableEffort) {

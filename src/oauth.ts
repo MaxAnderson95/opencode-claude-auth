@@ -122,7 +122,7 @@ async function fetchToken(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "User-Agent": `claude-cli/${config.ccVersion} (external, sdk-cli)`,
+      "User-Agent": `claude-cli/${config.ccVersion} (external, cli)`,
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
@@ -140,7 +140,7 @@ function requestToken(body: Record<string, string>): Promise<TokenResult> {
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload),
-          "User-Agent": `claude-cli/${config.ccVersion} (external, sdk-cli)`,
+          "User-Agent": `claude-cli/${config.ccVersion} (external, cli)`,
         },
       },
       (response) => {

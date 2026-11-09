@@ -120,7 +120,7 @@ describe("transforms", () => {
     )
   })
 
-  it("transformBody injects Claude Code 2.1.280 billing identity", () => {
+  it("transformBody injects Claude Code 2.1.321 billing identity", () => {
     const input = JSON.stringify({
       system: [{ type: "text", text: "system prompt" }],
       messages: [{ role: "user", content: "hey" }],
@@ -133,7 +133,7 @@ describe("transforms", () => {
 
     assert.equal(
       parsed.system[0].text,
-      "x-anthropic-billing-header: cc_version=2.1.280.1a0; cc_entrypoint=sdk-cli;",
+      "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;",
     )
   })
 
@@ -264,7 +264,7 @@ describe("transforms", () => {
     )
     assert.equal(
       billingEntries[0].text,
-      "x-anthropic-billing-header: cc_version=2.1.280.1a0; cc_entrypoint=sdk-cli;",
+      "x-anthropic-billing-header: cc_version=2.1.321.cf7; cc_entrypoint=cli;",
     )
     // "prompt" should be relocated to user message
     assert.ok(parsed.messages[0].content.includes("prompt"))
@@ -347,11 +347,25 @@ describe("transforms", () => {
     }
 
     assert.equal(parsed.max_tokens, 64_000)
-    assert.deepEqual(parsed.thinking, { type: "adaptive", display: "omitted" })
+    assert.deepEqual(parsed.thinking, { type: "adaptive", display: "updates" })
     assert.deepEqual(parsed.output_config, { effort: "medium" })
     assert.deepEqual(parsed.context_management, {
       edits: [{ type: "clear_thinking_20251015", keep: "all" }],
     })
+  })
+
+  it("transformBody skips clear_thinking when thinking is disabled", () => {
+    const output = transformBody(
+      JSON.stringify({
+        model: "claude-haiku-5-5",
+        thinking: { type: "disabled" },
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    )
+    const parsed = JSON.parse(output as string) as Record<string, unknown>
+
+    assert.deepEqual(parsed.thinking, { type: "disabled" })
+    assert.equal(parsed.context_management, undefined)
   })
 
   it("transformBody preserves explicit Opus 5 inference settings", () => {

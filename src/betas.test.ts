@@ -84,6 +84,45 @@ describe("betas", () => {
     )
   })
 
+  it("beta sets match interactive Claude Code 2.1.321 by model", () => {
+    const common = [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "advisor-tool-2026-03-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "thinking-display-updates-2026-08-18",
+      "extended-cache-ttl-2025-04-11",
+    ]
+    const opus5 = [
+      ...common,
+      "mid-conversation-tool-changes-2026-07-01",
+      "inline-tools-2026-09-15",
+      "fallback-credit-2026-06-01",
+    ]
+    const newest = [...opus5, "per-turn-control-2026-07-01"]
+    const expected: Record<string, string[]> = {
+      "claude-fable-5-2": newest,
+      "claude-opus-5-5": newest,
+      "claude-haiku-5-5": newest.filter(
+        (beta) => beta !== "fallback-credit-2026-06-01",
+      ),
+      "claude-opus-5": opus5,
+      "claude-opus-4-7": common,
+      "claude-sonnet-4-6": common,
+    }
+    for (const [model, betas] of Object.entries(expected)) {
+      assert.deepEqual(
+        [...getModelBetas(model)].sort(),
+        [...betas].sort(),
+        model,
+      )
+    }
+  })
+
   it("getModelOverride sets disableEffort for haiku models", () => {
     for (const model of ["claude-haiku-4-5", "claude-haiku-4-5-20251001"]) {
       const override = getModelOverride(model)
