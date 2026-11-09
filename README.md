@@ -59,9 +59,9 @@ To connect another subscription, repeat `/connect`. OpenCode stores each account
 
 ### Re-login without adding an account
 
-Run `/claude-login` in the TUI, select an existing named Claude subscription account, and choose `Automatic`, `Paste code`, or `Local callback`. Complete authorization for the same Claude account in the browser, then confirm the update. The command keeps the existing OpenCode credential ID, custom name, metadata, and active/inactive selection. It does not add an account or call the native `/connect` flow.
+Run `/claude-login` in the TUI, select an existing named Claude subscription account, and choose `Automatic`, `Paste code`, or `Local callback`. Complete authorization for the same Claude account in the browser; with a browser callback the dialog continues on its own, and a rejected pasted code can be corrected in place. Then choose `Save`. The command keeps the existing OpenCode credential ID, custom name, metadata, and active/inactive selection. It does not add an account or call the native `/connect` flow.
 
-This command requires OpenCode 2.2.6 or later and an expired access token. Accounts with unexpired access tokens are disabled in the picker: OpenCode only saves replacement tokens when it invokes the refresh callback. The plugin completes browser authorization first, then returns the replacement tokens through that callback so OpenCode owns persistence and credential locking.
+This command requires OpenCode 2.2.6 or later and an expired access token. The picker lists only accounts whose access token has expired; when none have, the command says which accounts are still signed in. OpenCode only saves replacement tokens when it invokes the refresh callback. The plugin completes browser authorization first, then returns the replacement tokens through that callback so OpenCode owns persistence and credential locking.
 
 The plugin cannot automatically verify which Claude identity an expired legacy credential belonged to. Check the browser account before confirming the update. Cancelling before saving leaves the existing credential untouched. If the account is removed or its tokens change during authorization, the command refuses to apply the replacement. Login attempts expire after five minutes, and cancellation closes local callback listeners.
 

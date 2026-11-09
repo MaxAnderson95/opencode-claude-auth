@@ -463,6 +463,19 @@ test("concurrent completion exchanges a pasted authorization code only once", as
   assert.equal(fixture.exchanges(), 1)
 })
 
+test("a rejected authorization code can be corrected without restarting the re-login", async (t) => {
+  const fixture = reloginFixture(t)
+  const attempt = await fixture.relogin.begin(fixture.input)
+  await assert.rejects(
+    fixture.relogin.complete(attempt.id, "typo#state"),
+    /Invalid OAuth state/,
+  )
+  await fixture.relogin.complete(attempt.id, "valid#state")
+  await fixture.relogin.commit(attempt.id)
+  assert.equal(fixture.exchanges(), 2)
+  assert.equal(fixture.account.value.access, "new-access")
+})
+
 test("abandoned re-logins expire and close authorization resources", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] })
   const fixture = reloginFixture(t)

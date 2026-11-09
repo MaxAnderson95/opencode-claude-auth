@@ -6,17 +6,17 @@ export const LOGIN_OPTIONS = [
   {
     value: "auto",
     label: "Automatic",
-    description: "Use paste-code login on SSH or headless Linux hosts",
+    description: "Browser callback; paste a code over SSH",
   },
   {
     value: "manual",
     label: "Paste code",
-    description: "Authorize in a browser on another machine",
+    description: "Sign in from a browser on another machine",
   },
   {
     value: "local",
     label: "Local callback",
-    description: "Browser can reach this server's localhost",
+    description: "Always use the localhost callback",
   },
 ] as const
 

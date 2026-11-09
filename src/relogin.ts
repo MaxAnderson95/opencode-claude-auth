@@ -122,12 +122,14 @@ export function createRelogin(options: {
         if (!code)
           throw new Error("Paste the authorization code including #state.")
         // A code can be exchanged only once, including with concurrent clients.
+        // A rejected code clears the exchange so a corrected paste can retry.
         attempt.pending ??= attempt.authorization.callback(code).then(
           (credential) => {
             attempt.credential = credential
           },
           (error: unknown) => {
-            attempt.failure = error
+            attempt.pending = undefined
+            throw error
           },
         )
       }
