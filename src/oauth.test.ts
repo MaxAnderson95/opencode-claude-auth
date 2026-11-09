@@ -5,10 +5,11 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { spawn } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { createRequire } from "node:module"
 import type { Credential, Plugin } from "@opencode/plugin"
 import { createCredentialRefresher } from "./oauth-refresh.ts"
 import { createRelogin } from "./relogin.ts"
-import { credentialFingerprint } from "./relogin-rpc.ts"
+import { credentialFingerprint, ReloginRpc } from "./relogin-rpc.ts"
 import {
   OAUTH_AUTHORIZE_URL,
   OAUTH_CLIENT_ID,
@@ -206,6 +207,51 @@ test("createAuthorizationRequest builds a PKCE authorization URL", () => {
   assert.equal(url.searchParams.get("state"), request.state)
   assert.ok(url.searchParams.get("code_challenge"))
   assert.ok(request.verifier)
+})
+
+test("re-login RPC schemas validate with OpenCode's default JSON Schema compiler", async () => {
+  const require = createRequire(import.meta.resolve("@opencode/plugin"))
+  const { JsonSchema, Schema, SchemaRepresentation } = await import(
+    require.resolve("effect")
+  )
+  const decode = (schema: object, value: unknown) =>
+    Schema.decodeUnknownSync(
+      Schema.make(
+        SchemaRepresentation.fromJsonSchemaDocument(
+          JsonSchema.fromSchemaDraft2020_12(schema),
+        ).ast,
+      ),
+    )(value)
+  const input = {
+    credentialID: "cred_fixture",
+    fingerprint: "0".repeat(64),
+    expires: 0,
+    loginMode: "manual",
+  }
+  assert.deepEqual(decode(ReloginRpc.methods.begin.input, input), input)
+  assert.throws(() =>
+    decode(ReloginRpc.methods.begin.input, {
+      ...input,
+      fingerprint: "too-short",
+    }),
+  )
+  for (const method of Object.values(ReloginRpc.methods)) {
+    for (const schema of Object.values(method.errors)) decode(schema, {})
+  }
+  for (const method of [
+    ReloginRpc.methods.complete,
+    ReloginRpc.methods.commit,
+    ReloginRpc.methods.cancel,
+  ]) {
+    decode(method.input, { id: "fixture-attempt" })
+    decode(method.output, {})
+  }
+  decode(ReloginRpc.methods.begin.output, {
+    id: "fixture-attempt",
+    mode: "code",
+    url: "https://claude.ai/oauth/authorize",
+    instructions: "Paste code",
+  })
 })
 
 test("cancelling local authorization closes its listener and rejects its callback", async () => {

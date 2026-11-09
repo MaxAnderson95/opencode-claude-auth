@@ -69,7 +69,7 @@ export const ReloginRpc = {
         type: "object",
         properties: {
           credentialID: ID,
-          fingerprint: { type: "string", pattern: "^[a-f0-9]{64}$" },
+          fingerprint: { type: "string", minLength: 64, maxLength: 64 },
           expires: { type: "integer", minimum: 0 },
           loginMode: { enum: ["auto", "manual", "local"] },
         },
