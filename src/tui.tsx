@@ -12,6 +12,7 @@ export default Plugin.define({
       append: "app",
       render() {
         context.keymap.layer(() => ({
+          mode: "global",
           commands: [
             {
               id: "opencode-claude-auth.relogin",
